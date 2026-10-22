@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// HomeGlow.homeAssistant.phones, notify and clearNotification: what each one
-// asks the server, for a plugin whose manifest declares homeAssistant.notify.
+// HomeGlow.notify.phones, send and clear: what each one asks the server,
+// for a plugin whose manifest declares "notify": true.
 const sdkSource = fs.readFileSync(path.resolve(__dirname, '..', 'plugin-sdk', 'v1.js'), 'utf8');
 
 function loadSdk() {
@@ -27,24 +27,24 @@ function loadSdk() {
 
 test('phones() lists the household\'s phones', async () => {
   const { HomeGlow, requests } = loadSdk();
-  await HomeGlow.homeAssistant.phones();
+  await HomeGlow.notify.phones();
   assert.equal(requests[0].method, 'GET');
-  assert.match(requests[0].url, /\/api\/plugin\/v1\/ha\/grill-card\/phones$/);
+  assert.match(requests[0].url, /\/api\/plugin\/v1\/notify\/grill-card\/phones$/);
 });
 
-test('notify() sends the phones, the text, urgent and tag, and the display', async () => {
+test('send() sends the phones, the text, urgent and tag, and the display', async () => {
   const { HomeGlow, requests } = loadSdk();
-  await HomeGlow.homeAssistant.notify(['mobile_app_sams_pixel'], { title: 'Grill', message: 'Brisket is 198°.', urgent: true, tag: 'food' });
-  assert.match(requests[0].url, /\/api\/plugin\/v1\/ha\/grill-card\/notify$/);
+  await HomeGlow.notify.send(['mobile_app_sams_pixel'], { title: 'Grill', message: 'Brisket is 198°.', urgent: true, tag: 'food' });
+  assert.match(requests[0].url, /\/api\/plugin\/v1\/notify\/grill-card$/);
   assert.equal(requests[0].method, 'POST');
   assert.deepEqual(requests[0].body, { phones: ['mobile_app_sams_pixel'], title: 'Grill', message: 'Brisket is 198°.', urgent: true, tag: 'food', device: 'Kitchen wall' });
-  await HomeGlow.homeAssistant.notify(['mobile_app_sams_pixel'], { message: 'Timer done' });
+  await HomeGlow.notify.send(['mobile_app_sams_pixel'], { message: 'Timer done' });
   assert.deepEqual(requests[1].body, { phones: ['mobile_app_sams_pixel'], message: 'Timer done', device: 'Kitchen wall' });
 });
 
-test('clearNotification() takes back a tag', async () => {
+test('clear() takes back a tag', async () => {
   const { HomeGlow, requests } = loadSdk();
-  await HomeGlow.homeAssistant.clearNotification(['mobile_app_sams_pixel'], 'food');
-  assert.match(requests[0].url, /\/notify\/clear$/);
+  await HomeGlow.notify.clear(['mobile_app_sams_pixel'], 'food');
+  assert.match(requests[0].url, /\/api\/plugin\/v1\/notify\/grill-card\/clear$/);
   assert.deepEqual(requests[0].body, { phones: ['mobile_app_sams_pixel'], tag: 'food', device: 'Kitchen wall' });
 });

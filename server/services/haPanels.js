@@ -563,8 +563,9 @@ function accessFromRecipe(recipe) {
 
 // --- Phones (the Companion app's notify actions) ------------------------------
 //
-// A plugin that declares `"notify": true` may list the household's phones and
-// send one a short message. Only Mobile App phones (Home Assistant's
+// For the plugin notify API (routes/pluginNotify.js): a plugin that declares
+// `"notify": true` may list the household's phones and send one a short
+// message. Here, Home Assistant's: only Mobile App phones (its
 // notify.mobile_app_<name> actions), only a title, a message, a label and an
 // "urgent" flag: never notify data a plugin writes itself, so a plugin can't
 // open a page, run a command on the phone or reach any other notify target.
@@ -573,10 +574,9 @@ const PHONE_ID = /^mobile_app_[a-z0-9_]{1,80}$/;
 const NOTE_TAG = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const MAX_TITLE = 60;
 const MAX_MESSAGE = 300;
-const MAX_PHONES = 8;
 
 /** Home Assistant's slugify, as it names a phone's notify action. */
-const slugify = (text) => String(text || '').normalize('NFKD').replace(/[̀-ͯ]/g, '')
+const slugify = (text) => String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
   .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 
 /** Plain text, one line apart from line breaks, trimmed to `max`. */
@@ -589,7 +589,7 @@ const noteText = (value, max) => (typeof value === 'string'
  * offers (`services`, from GET /api/services), named from its device
  * (`devices`, the device registry; null when it can't be read), and whether
  * it is an iPhone or an Android, which "urgent" needs. Sorted by name.
- * -> [{ id, name, platform: 'ios' | 'android' | null }]
+ * -> [{ id, name, platform: 'ios' | 'android' | null, via: 'home_assistant' }]
  */
 function phonesFrom(services, devices) {
   const notify = Array.isArray(services) ? services.find((entry) => entry?.domain === 'notify') : null;
@@ -603,7 +603,7 @@ function phonesFrom(services, devices) {
     const os = String(device?.sw_version || '').toLowerCase();
     const platform = !device ? null : (maker === 'apple' || /^(ios|ipados)\b/.test(os) ? 'ios' : 'android');
     const fallback = slug.replace(/_/g, ' ').replace(/\b[a-z]/g, (c) => c.toUpperCase());
-    return { id, name: String(device?.name_by_user || device?.name || fallback).slice(0, 60), platform };
+    return { id, name: String(device?.name_by_user || device?.name || fallback).slice(0, 60), platform, via: 'home_assistant' };
   }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -639,22 +639,6 @@ function clearCall({ phone, pluginId, tag }) {
   return { domain: 'notify', service: phone.id, data: { message: 'clear_notification', data: { tag: noteTag(pluginId, tag) } } };
 }
 
-/**
- * The phones a request names, each one of the household's: [ids] ->
- * [phone], or ActionError (400 for a bad list, 404 for a phone Home
- * Assistant doesn't have).
- */
-function pickPhones(ids, phones) {
-  if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_PHONES || ids.some((id) => typeof id !== 'string')) {
-    throw new ActionError(`Name 1 to ${MAX_PHONES} phones.`);
-  }
-  return [...new Set(ids)].map((id) => {
-    const phone = phones.find((p) => p.id === id);
-    if (!phone) throw new ActionError(`Home Assistant has no phone ${String(id).slice(0, 80)}.`, 404);
-    return phone;
-  });
-}
-
 /** Problems with a hand-written plugin's `homeAssistant` manifest block. */
 // Domains a plugin may be granted whole: a published plugin (a music
 // player, say) can't know a household's entity ids. Never the ones that open
@@ -668,7 +652,6 @@ const GRANTABLE_DOMAINS = Object.keys(DOMAINS).filter((domain) => !['lock', 'ala
  *   control       false for read only
  *   playUrlsFrom  the key of a household string setting naming the plugin's
  *                 media server; play_url plays addresses on that server only
- *   notify        true to list the household's phones and send them messages
  * `manifest`, when given, is checked for that setting.
  */
 function validateManifestAccess(block, manifest) {
@@ -676,8 +659,7 @@ function validateManifestAccess(block, manifest) {
   const errors = [];
   const hasEntities = block.entities !== undefined;
   const hasDomains = block.domains !== undefined;
-  if (block.notify !== undefined && typeof block.notify !== 'boolean') errors.push('homeAssistant.notify must be true or false.');
-  if (!hasEntities && !hasDomains && block.notify !== true) errors.push('homeAssistant needs entities, domains or notify.');
+  if (!hasEntities && !hasDomains) errors.push('homeAssistant needs entities or domains.');
   if (hasEntities) {
     if (!Array.isArray(block.entities) || block.entities.length === 0 || block.entities.length > MAX_MANIFEST_ENTITIES) {
       errors.push(`homeAssistant.entities must list 1 to ${MAX_MANIFEST_ENTITIES} entities.`);
@@ -717,7 +699,6 @@ function accessFromManifest(block) {
     domains,
     controlDomains: readOnly ? new Set() : new Set(domains),
     playUrlsFrom: typeof block?.playUrlsFrom === 'string' ? block.playUrlsFrom : null,
-    notify: block?.notify === true,
   };
 }
 
@@ -792,7 +773,6 @@ module.exports = {
   panelManifest,
   panelPluginId,
   phonesFrom,
-  pickPhones,
   resolveAction,
   validateManifestAccess,
   validateRecipe,

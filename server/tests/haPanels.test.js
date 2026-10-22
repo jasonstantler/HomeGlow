@@ -270,9 +270,9 @@ const DEVICES = [
 test('phones are the notify.mobile_app_* actions, named and told apart by their devices', () => {
   const phones = rules.phonesFrom(SERVICES, DEVICES);
   assert.deepEqual(phones, [
-    { id: 'mobile_app_jason_s_pixel', name: "Jason's Pixel", platform: 'android' },
-    { id: 'mobile_app_old_tablet', name: 'Old Tablet', platform: null },
-    { id: 'mobile_app_sam_s_iphone', name: 'Sam', platform: 'ios' },
+    { id: 'mobile_app_jason_s_pixel', name: "Jason's Pixel", platform: 'android', via: 'home_assistant' },
+    { id: 'mobile_app_old_tablet', name: 'Old Tablet', platform: null, via: 'home_assistant' },
+    { id: 'mobile_app_sam_s_iphone', name: 'Sam', platform: 'ios', via: 'home_assistant' },
   ]);
   // No device list (no WebSocket): still every phone, by its action's name.
   assert.deepEqual(rules.phonesFrom(SERVICES, null).map((p) => [p.id, p.platform]),
@@ -310,22 +310,4 @@ test('a plugin sends only text: trimmed, plain, and never notify data of its own
   assert.deepEqual(rules.clearCall({ phone: android, pluginId: 'grill-card', tag: 'food' }),
     { domain: 'notify', service: 'mobile_app_jason_s_pixel', data: { message: 'clear_notification', data: { tag: 'homeglow-grill-card-food' } } });
   assert.throws(() => rules.clearCall({ phone: android, pluginId: 'p' }), /tag/);
-});
-
-test('only the household\'s phones, up to eight at once', () => {
-  const phones = rules.phonesFrom(SERVICES, DEVICES);
-  assert.deepEqual(rules.pickPhones(['mobile_app_sam_s_iphone', 'mobile_app_sam_s_iphone'], phones).map((p) => p.id), ['mobile_app_sam_s_iphone']);
-  assert.throws(() => rules.pickPhones(['notify'], phones), (e) => e.status === 404);
-  assert.throws(() => rules.pickPhones(['persistent_notification'], phones), (e) => e.status === 404);
-  for (const bad of [[], 'mobile_app_sam_s_iphone', [7], Array.from({ length: 9 }, () => 'mobile_app_sam_s_iphone'), undefined]) {
-    assert.throws(() => rules.pickPhones(bad, phones), (e) => e.status === 400, JSON.stringify(bad));
-  }
-});
-
-test('a manifest may ask for notify on its own, as true or false only', () => {
-  assert.deepEqual(rules.validateManifestAccess({ notify: true }), []);
-  assert.equal(rules.accessFromManifest({ notify: true }).notify, true);
-  assert.equal(rules.accessFromManifest({ domains: ['sensor'] }).notify, false);
-  assert.ok(rules.validateManifestAccess({ notify: 'yes' }).some((e) => /notify must be true or false/.test(e)));
-  assert.ok(rules.validateManifestAccess({ notify: false }).some((e) => /needs entities, domains or notify/.test(e)));
 });

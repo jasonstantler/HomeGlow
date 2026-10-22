@@ -369,34 +369,6 @@
           });
         });
       },
-      /**
-       * The household's phones, for a plugin whose manifest declares
-       * "homeAssistant": { "notify": true }: every Home Assistant Companion
-       * app phone. -> Promise<{ phones: [{ id, name, platform }] }>, where
-       * platform is 'ios', 'android' or null when HomeGlow can't tell.
-       */
-      phones: function () {
-        return request('GET', '/ha/' + encodeURIComponent(requirePluginId()) + '/phones');
-      },
-      /**
-       * Send phones a message: notify(['mobile_app_sams_phone'], { title,
-       * message, urgent, tag }). urgent rings through a silent phone (an
-       * Android's alarm stream, an iPhone's critical alert). A tag (lowercase
-       * letters, numbers, dashes) lets a newer message replace an older one
-       * and clearNotification take it back.
-       * -> Promise<{ ok, results: { phoneId: { ok, error? } } }>
-       */
-      notify: function (phones, note) {
-        note = note || {};
-        var body = { phones: phones, title: note.title, message: note.message, device: deviceName };
-        if (note.urgent !== undefined) body.urgent = note.urgent;
-        if (note.tag !== undefined) body.tag = note.tag;
-        return request('POST', '/ha/' + encodeURIComponent(requirePluginId()) + '/notify', body);
-      },
-      /** Take back the message sent with this tag. Best effort: a phone may keep it. */
-      clearNotification: function (phones, tag) {
-        return request('POST', '/ha/' + encodeURIComponent(requirePluginId()) + '/notify/clear', { phones: phones, tag: tag, device: deviceName });
-      },
       /** The address of a camera's latest snapshot, for an <img>. */
       cameraUrl: function (entityId) {
         return API_BASE + '/ha/' + encodeURIComponent(requirePluginId()) + '/camera/' + encodeURIComponent(entityId) + '?t=' + Date.now();
@@ -426,6 +398,39 @@
         artUrl: function (entityId, version) {
           return API_BASE + mediaPath(entityId, '/art') + '?v=' + encodeURIComponent(version || '');
         }
+      }
+    },
+
+    /**
+     * Phone notifications, for a plugin whose manifest declares "notify": true.
+     * HomeGlow reaches phones through Home Assistant's Companion app or
+     * Pushover, whichever the household set up in Admin → System → Connections.
+     */
+    notify: {
+      /**
+       * -> Promise<{ phones: [{ id, name, platform, via }], errors? }>. via is
+       * 'home_assistant' or 'pushover'; platform is 'ios', 'android' or null
+       * when HomeGlow can't tell. errors names a way that couldn't be asked.
+       */
+      phones: function () {
+        return request('GET', '/notify/' + encodeURIComponent(requirePluginId()) + '/phones');
+      },
+      /**
+       * Send phones a message: send(['mobile_app_sams_pixel'], { title,
+       * message, urgent, tag }). urgent rings through a silent phone where it
+       * can. A tag (lowercase letters, numbers, dashes) labels the message so
+       * clear() can take it back. -> Promise<{ ok, results: { id: { ok, error? } } }>
+       */
+      send: function (phones, note) {
+        note = note || {};
+        var body = { phones: phones, title: note.title, message: note.message, device: deviceName };
+        if (note.urgent !== undefined) body.urgent = note.urgent;
+        if (note.tag !== undefined) body.tag = note.tag;
+        return request('POST', '/notify/' + encodeURIComponent(requirePluginId()), body);
+      },
+      /** Take back the message sent with this tag. Best effort: a phone may keep it. */
+      clear: function (phones, tag) {
+        return request('POST', '/notify/' + encodeURIComponent(requirePluginId()) + '/clear', { phones: phones, tag: tag, device: deviceName });
       }
     },
 

@@ -217,7 +217,8 @@ serving your widget, and the SDK picks it up — you never pass your own id.
 | `reactions` | — | Server-side increments run on events (see §6). Requires `storage: true`. |
 | `hideableControls` | — | Controls a display may be configured to hide (see §4). |
 | `expand` | — | `false` keeps the plugin from being expanded to half or the whole page on a display that expands widgets, for a plugin whose own double-tap or drag would fight with it. Leave it out otherwise (see "Being expanded" in §5). |
-| `homeAssistant` | — | `{ "entities": [...], "control": true }`: the Home Assistant entities the plugin may read and operate, and `"notify": true` to send the household's phones a message (see §5a). |
+| `homeAssistant` | — | `{ "entities": [...], "control": true }`: the Home Assistant entities the plugin may read and operate (see §5a). |
+| `notify` | — | `true` to send the household's phones a short message, through Home Assistant's Companion app or Pushover (see §5b). |
 
 Keys not listed here are **ignored**, not rejected — so a misspelled field fails
 silently rather than loudly.
@@ -540,50 +541,6 @@ appears several times (Music Assistant's entity beside its Cast and DLNA ones);
 these tell them apart. A source is `null` when Home Assistant has no registry
 entry for the entity, or its registry can't be read.
 
-### Phones: send a notification
-
-A plugin can send the household's phones a short message through Home
-Assistant's Companion app, without a script. Declare it:
-
-```json
-"homeAssistant": { "notify": true }
-```
-
-```js
-const { phones } = await HomeGlow.homeAssistant.phones();
-// [{ id: 'mobile_app_sams_pixel', name: "Sam's Pixel", platform: 'android' }, ...]
-await HomeGlow.homeAssistant.notify(['mobile_app_sams_pixel'], {
-  title: 'Grill', message: 'Brisket is 198°. Pull it at 200°.', urgent: true, tag: 'food',
-});
-await HomeGlow.homeAssistant.clearNotification(['mobile_app_sams_pixel'], 'food');
-```
-
-- **Phones only.** `phones()` lists Home Assistant's `notify.mobile_app_*`
-  actions (one for each phone with the Companion app), named from the phone's
-  device, and says whether each is an iPhone or an Android (`platform` is
-  `null` when HomeGlow can't tell). `notify` and `clearNotification` take up to
-  8 of those ids; any other notify target is refused.
-- **Only text.** A title (60 characters) and a message (300). Nothing else a
-  plugin sends reaches the phone: no links, no commands, no notify `data` of
-  its own. Every message asks to arrive at once, so a sleeping Android doesn't
-  hold it until its screen comes on.
-- **`urgent: true` rings through a silent phone:** an Android plays it on the
-  alarm stream (`channel: alarm_stream`, which rings on vibrate or silent but
-  not through Do Not Disturb); an iPhone gets a critical alert, which also rings
-  through mute and Do Not Disturb once its owner has allowed Critical Alerts for
-  the Home Assistant app. A phone HomeGlow can't place gets both.
-- **`tag`** (up to 40 lowercase letters, numbers and dashes) labels a message:
-  a newer one with the same tag replaces it, and `clearNotification` takes it
-  back. Tags are the plugin's own, so it can't touch another's messages.
-  Clearing is best effort: a phone whose app hasn't run lately may keep it, and
-  an iPhone can't replace a critical alert.
-- `notify` answers `{ ok, results: { id: { ok, error? } } }`: every phone is
-  tried, and the call fails only when none got it. 30 messages a minute per
-  plugin (`429` beyond), and each one is listed under **What panels did** in
-  Admin → Dashboard → Home Assistant, with the display that sent it.
-- `"notify": true` works on its own or beside `entities` and `domains`;
-  `"control": false` doesn't affect it.
-
 ### Music: a speaker's library
 
 For a media player the plugin may operate, HomeGlow opens the player's own
@@ -642,6 +599,56 @@ that shows it what is playing; otherwise all it knows is the address.
 A speaker that gives such an address as `media_title` has it passed on without
 its query, so a sign-in in the address (Jellyfin's `api_key`) stays out of
 every panel and plugin.
+
+## 5b. Phone notifications
+
+A plugin can send the household's phones a short message, Android or iPhone,
+through whichever way the household has set up in Admin → System →
+Connections: **Home Assistant's Companion app** (each phone with the app is a
+`notify.mobile_app_*` action) or **Pushover** (pushover.net; for households
+without Home Assistant). Declare it:
+
+```json
+"notify": true
+```
+
+```js
+const { phones } = await HomeGlow.notify.phones();
+// [{ id: 'mobile_app_sams_pixel', name: "Sam's Pixel", platform: 'android', via: 'home_assistant' },
+//  { id: 'pushover:iphone', name: 'iphone (Pushover)', platform: null, via: 'pushover' }]
+await HomeGlow.notify.send(['mobile_app_sams_pixel'], {
+  title: 'Grill', message: 'Brisket is 198°. Pull it at 200°.', urgent: true, tag: 'food',
+});
+await HomeGlow.notify.clear(['mobile_app_sams_pixel'], 'food');
+```
+
+- **Phones only.** `phones()` lists the Companion app phones Home Assistant
+  offers, named from each phone's device (`platform` says `ios` or `android`,
+  or `null` when HomeGlow can't tell), and the Pushover account's devices
+  (`pushover:<device>`), or one `pushover` entry for a delivery group. A way
+  that can't be asked right now is named in `errors`; the other's phones are
+  still listed. `send` and `clear` take up to 8 of those ids; anything else is
+  refused, so a plugin reaches no other notify target.
+- **Only text.** A title (60 characters) and a message (300). Nothing else a
+  plugin sends reaches a phone: no links, commands or notify data of its own.
+  Through Home Assistant every message asks to arrive at once
+  (`priority: high`, `ttl: 0`), so a sleeping Android doesn't hold it.
+- **`urgent: true`** rings through a silent phone where it can. Home Assistant:
+  an Android plays it on the alarm stream (it rings on vibrate or silent, not
+  through Do Not Disturb), an iPhone gets a critical alert once its owner allows
+  Critical Alerts for the app; a phone HomeGlow can't place gets both. Pushover:
+  emergency priority, which repeats every minute until someone acknowledges it
+  on a phone, for up to an hour.
+- **`tag`** (up to 40 lowercase letters, numbers and dashes) labels a message,
+  and is the plugin's own: it can't touch another's. Through Home Assistant a
+  newer message with the same tag replaces the older, and `clear` takes it
+  back (best effort: a phone whose app hasn't run lately may keep it; an
+  iPhone can't replace a critical alert). Through Pushover, `clear` stops an
+  urgent message repeating; one a phone already shows stays.
+- `send` answers `{ ok, results: { id: { ok, error? } } }`: every phone is
+  tried, and the call fails only when none got it. 30 messages a minute per
+  plugin (`429` beyond). Each send is listed under **What panels did** in
+  Admin → Dashboard → Home Assistant, with the display that sent it.
 
 ## 6. Reactions — server-side logic without server-side code
 
@@ -873,9 +880,9 @@ see §3–§5. The raw endpoints:
 | `GET` | `/api/plugin/v1/ha/:pluginId/state` | → `{ entities, control, live, unit, pinProtection, error? }` (§5a) |
 | `POST` | `/api/plugin/v1/ha/:pluginId/action` | body: `{ entity` or `entities, action, value?, pin?, device? }` → `{ ok, entities }`; `401 { needsPin }`, `403` outside your list, `429` over 10 a second |
 | `GET` | `/api/plugin/v1/ha/:pluginId/camera/:entityId` | → a declared camera's snapshot image |
-| `GET` | `/api/plugin/v1/ha/:pluginId/phones` | → `{ phones: [{ id, name, platform }] }`, for a plugin that declares `homeAssistant.notify` (§5a) |
-| `POST` | `/api/plugin/v1/ha/:pluginId/notify` | body: `{ phones, title?, message, urgent?, tag?, device? }` → `{ ok, results }`; `403` without `notify`, `404` for a phone Home Assistant doesn't have, `429` over 30 a minute |
-| `POST` | `/api/plugin/v1/ha/:pluginId/notify/clear` | body: `{ phones, tag, device? }` → `{ ok, results }` |
+| `GET` | `/api/plugin/v1/notify/:pluginId/phones` | → `{ phones: [{ id, name, platform, via }], errors? }`, for a plugin that declares `notify` (§5b) |
+| `POST` | `/api/plugin/v1/notify/:pluginId` | body: `{ phones, title?, message, urgent?, tag?, device? }` → `{ ok, results }`; `403` without `notify`, `404` for an unknown phone, `503` with no way to reach phones set up, `429` over 30 a minute |
+| `POST` | `/api/plugin/v1/notify/:pluginId/clear` | body: `{ phones, tag, device? }` → `{ ok, results }` |
 
 `:pluginId` must match your manifest `id`, and storage/settings require
 `"storage": true` / declared `settings` respectively (else `403`).

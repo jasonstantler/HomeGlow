@@ -19,11 +19,6 @@
 //   POST /api/plugin/v1/ha/:pluginId/action   { entity | entities, action, value, pin, device }
 //   GET  /api/plugin/v1/ha/:pluginId/camera/:entityId
 //
-// Phones, for a plugin whose manifest declares `homeAssistant.notify`:
-//   GET  /api/plugin/v1/ha/:pluginId/phones         the household's Mobile App phones
-//   POST /api/plugin/v1/ha/:pluginId/notify         { phones, title, message, urgent, tag, device }
-//   POST /api/plugin/v1/ha/:pluginId/notify/clear   { phones, tag, device }
-//
 // Music, for a media player on the panel (services/haMedia.js):
 //   GET    /api/plugin/v1/ha/:pluginId/media/:entityId/browse?item=   its library, a level at a time
 //   GET    /api/plugin/v1/ha/:pluginId/media/:entityId/search?q=      search it (and remember the search)
@@ -627,102 +622,6 @@ function registerHaPanelRoutes(fastify, { db, live, ha, demoMode, installPluginR
     for (const id of targets) results[id] = rules.filterState(after.states[id]);
     return { ok: true, entities: results };
   });
-
-  // --- Phones: a plugin that declares homeAssistant.notify -------------------
-
-  // The phone list is asked of Home Assistant at most every 60 seconds.
-  let phoneCache = null;
-  const PHONES_TTL_MS = 60000;
-  async function householdPhones(fresh) {
-    if (!fresh && phoneCache && Date.now() - phoneCache.at < PHONES_TTL_MS) return phoneCache.phones;
-    const services = await ha.homeAssistantFetch(db, 'GET', '/api/services');
-    const [devices] = await live.commands([{ type: 'config/device_registry/list' }]).catch(() => [null]);
-    const phones = rules.phonesFrom(services, devices);
-    phoneCache = { phones, at: Date.now() };
-    return phones;
-  }
-
-  // Messages to phones: 30 a minute for each plugin, on top of the 10 a second.
-  const NOTIFY_WINDOW_MS = 60000;
-  const NOTIFY_LIMIT = 30;
-  const notifyRate = new Map();
-  const overNotifyLimit = (pluginId) => {
-    const now = Date.now();
-    const recent = (notifyRate.get(pluginId) || []).filter((at) => now - at < NOTIFY_WINDOW_MS);
-    recent.push(now);
-    notifyRate.set(pluginId, recent);
-    return recent.length > NOTIFY_LIMIT;
-  };
-
-  /** The plugin's access, if it may notify; otherwise the reply is sent and null comes back. */
-  function notifyAccessOr4xx(pluginId, reply) {
-    const access = accessFor(pluginId);
-    if (!access) {
-      reply.status(404).send({ error: 'This plugin has no Home Assistant access.' });
-      return null;
-    }
-    if (!access.notify) {
-      reply.status(403).send({ error: 'This plugin may not send phone notifications. Its manifest needs "homeAssistant": { "notify": true }.' });
-      return null;
-    }
-    if (demoMode || !ha.isConfigured(db)) {
-      unavailable(reply);
-      return null;
-    }
-    return access;
-  }
-
-  fastify.get('/api/plugin/v1/ha/:pluginId/phones', async (request, reply) => {
-    if (!notifyAccessOr4xx(request.params.pluginId, reply)) return undefined;
-    try {
-      return { phones: await householdPhones(false) };
-    } catch (error) {
-      return reply.status(error.status && error.status < 600 ? error.status : 502).send({ error: error.message || 'Could not read Home Assistant.' });
-    }
-  });
-
-  /**
-   * Send (or, with clear, take back) a message on each phone named. Every
-   * phone is tried; the answer says how each went: 200 when at least one
-   * got it, the first phone's error when none did.
-   */
-  async function sendToPhones(request, reply, clear) {
-    const { pluginId } = request.params;
-    if (!notifyAccessOr4xx(pluginId, reply)) return undefined;
-    const { phones: ids, title, message, urgent, tag, device } = request.body || {};
-    if (overLimit(pluginId) || overNotifyLimit(pluginId)) return reply.status(429).send({ error: 'Too many notifications at once; try again later.' });
-    let calls;
-    try {
-      let phones = await householdPhones(false);
-      // A phone added since the list was read: read it again once.
-      if (Array.isArray(ids) && ids.some((id) => !phones.some((p) => p.id === id))) phones = await householdPhones(true);
-      calls = rules.pickPhones(ids, phones).map((phone) => ({
-        phone,
-        ...(clear ? rules.clearCall({ phone, pluginId, tag }) : rules.notifyCall({ phone, pluginId, title, message, urgent, tag })),
-      }));
-    } catch (error) {
-      logAction({ pluginId, device, entity: Array.isArray(ids) ? ids.slice(0, 8).join(',').slice(0, 200) : 'notify', action: clear ? 'clear' : 'notify', ok: false, error: error.message });
-      return reply.status(error.status && error.status < 600 ? error.status : 502).send({ error: error.message });
-    }
-    const action = clear ? 'clear' : (urgent === true ? 'notify (urgent)' : 'notify');
-    const outcomes = await Promise.all(calls.map((call) => live.callService(call.domain, call.service, call.data)
-      .then(() => {
-        logAction({ pluginId, device, entity: `notify.${call.phone.id}`, action, ok: true });
-        return { id: call.phone.id, ok: true };
-      }, (error) => {
-        logAction({ pluginId, device, entity: `notify.${call.phone.id}`, action, ok: false, error: error.message });
-        return { id: call.phone.id, ok: false, error };
-      })));
-    const results = Object.fromEntries(outcomes.map((o) => [o.id, o.ok ? { ok: true } : { ok: false, error: o.error.message }]));
-    if (outcomes.every((o) => !o.ok)) {
-      const { error } = outcomes[0];
-      return reply.status(error.status && error.status < 600 ? error.status : 502).send({ error: error.message, results });
-    }
-    return { ok: outcomes.every((o) => o.ok), results };
-  }
-
-  fastify.post('/api/plugin/v1/ha/:pluginId/notify', async (request, reply) => sendToPhones(request, reply, false));
-  fastify.post('/api/plugin/v1/ha/:pluginId/notify/clear', async (request, reply) => sendToPhones(request, reply, true));
 
   fastify.get('/api/plugin/v1/ha/:pluginId/camera/:entityId', async (request, reply) => {
     const { pluginId, entityId } = request.params;
