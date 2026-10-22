@@ -672,3 +672,86 @@ test('play_url carries what is playing, with a cover from the same server only',
   assert.equal(fake.calls.length, before);
   await del('/api/widgets/music-meta.html');
 });
+
+test('a plugin that declares notify lists the household\'s phones, and one that doesn\'t is refused', needsWebSocket, async () => {
+  const up = await uploadPlugin('phone-test.html', { manifestVersion: 1, id: 'phone-test', name: 'Phone test', homeAssistant: { notify: true } });
+  assert.equal(up.status, 200, JSON.stringify(up.body));
+  const { status, body } = await api('/api/plugin/v1/ha/phone-test/phones');
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.deepEqual(body.phones, [
+    { id: 'mobile_app_alex_s_iphone', name: "Alex's iPhone", platform: 'ios' },
+    { id: 'mobile_app_sam_s_pixel', name: "Sam's Pixel", platform: 'android' },
+  ]);
+  // Its own entities: none. Notify alone grants nothing else.
+  assert.deepEqual((await api('/api/plugin/v1/ha/phone-test/state')).body.entities, {});
+  assert.equal((await post('/api/plugin/v1/ha/phone-test/action', { entity: 'light.kitchen', action: 'toggle' })).status, 403);
+
+  // A plugin with Home Assistant access but no notify, and one with none.
+  const other = await uploadPlugin('no-phones.html', { manifestVersion: 1, id: 'no-phones', homeAssistant: { domains: ['sensor'] } });
+  assert.equal(other.status, 200, JSON.stringify(other.body));
+  assert.equal((await api('/api/plugin/v1/ha/no-phones/phones')).status, 403);
+  assert.equal((await post('/api/plugin/v1/ha/no-phones/notify', { phones: ['mobile_app_sam_s_pixel'], message: 'hi' })).status, 403);
+  assert.equal((await api('/api/plugin/v1/ha/nobody/phones')).status, 404);
+  // notify must be true or false.
+  assert.equal((await uploadPlugin('bad-notify.html', { manifestVersion: 1, id: 'bad-notify', homeAssistant: { notify: 'yes' } })).status, 400);
+});
+
+test('a message goes to each phone named, urgent the way each kind of phone rings through silent', needsWebSocket, async () => {
+  await delay(1100);
+  const before = fake.calls.length;
+  const sent = await post('/api/plugin/v1/ha/phone-test/notify', {
+    phones: ['mobile_app_sam_s_pixel', 'mobile_app_alex_s_iphone'], title: 'Grill', message: 'Grill is 310°, set to 250°.', urgent: true, tag: 'problem', device: 'Kitchen',
+  });
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  assert.deepEqual(sent.body, { ok: true, results: { mobile_app_sam_s_pixel: { ok: true }, mobile_app_alex_s_iphone: { ok: true } } });
+  const calls = fake.calls.slice(before);
+  assert.deepEqual(calls.find((c) => c.service === 'mobile_app_sam_s_pixel'), {
+    domain: 'notify', service: 'mobile_app_sam_s_pixel',
+    data: { title: 'Grill', message: 'Grill is 310°, set to 250°.', data: { priority: 'high', ttl: 0, channel: 'alarm_stream', tag: 'homeglow-phone-test-problem' } },
+  });
+  assert.deepEqual(calls.find((c) => c.service === 'mobile_app_alex_s_iphone').data.data,
+    { push: { sound: { name: 'default', critical: 1, volume: 1.0 } }, tag: 'homeglow-phone-test-problem' });
+
+  // Taken back by its tag.
+  const cleared = await post('/api/plugin/v1/ha/phone-test/notify/clear', { phones: ['mobile_app_sam_s_pixel'], tag: 'problem' });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(fake.calls.at(-1), { domain: 'notify', service: 'mobile_app_sam_s_pixel', data: { message: 'clear_notification', data: { tag: 'homeglow-phone-test-problem' } } });
+
+  // The history says who sent what.
+  const history = await api('/api/ha-panels/history?limit=5');
+  assert.ok(history.body.actions.some((a) => a.pluginId === 'phone-test' && a.entity === 'notify.mobile_app_alex_s_iphone' && a.action === 'notify (urgent)' && a.device === 'Kitchen'), JSON.stringify(history.body.actions));
+});
+
+test('only phones, only text: anything else is refused before Home Assistant', needsWebSocket, async () => {
+  await delay(1100);
+  const before = fake.calls.length;
+  const send = (body) => post('/api/plugin/v1/ha/phone-test/notify', { message: 'hi', ...body });
+  assert.equal((await send({ phones: ['notify'] })).status, 404, 'notify.notify is no phone');
+  assert.equal((await send({ phones: ['persistent_notification'] })).status, 404);
+  assert.equal((await send({ phones: ['mobile_app_nobody'] })).status, 404);
+  assert.equal((await send({ phones: [] })).status, 400);
+  await delay(1100);
+  assert.equal((await send({ phones: ['mobile_app_sam_s_pixel'], message: '  ' })).status, 400);
+  assert.equal((await send({ phones: ['mobile_app_sam_s_pixel'], urgent: 'loud' })).status, 400);
+  assert.equal((await send({ phones: ['mobile_app_sam_s_pixel'], tag: 'Not OK!' })).status, 400);
+  assert.equal(fake.calls.length, before, 'nothing refused reached Home Assistant');
+
+  // Extra notify data from the plugin never reaches the phone.
+  await delay(1100);
+  const sneaky = await send({ phones: ['mobile_app_sam_s_pixel'], data: { command: 'command_activity', clickAction: 'https://evil.example' } });
+  assert.equal(sneaky.status, 200, JSON.stringify(sneaky.body));
+  assert.deepEqual(fake.calls.at(-1).data, { message: 'hi', data: { priority: 'high', ttl: 0 } });
+});
+
+test('a plugin sends at most 30 messages a minute', needsWebSocket, async () => {
+  const up = await uploadPlugin('phone-busy.html', { manifestVersion: 1, id: 'phone-busy', homeAssistant: { notify: true } });
+  assert.equal(up.status, 200, JSON.stringify(up.body));
+  let refused = 0;
+  for (let i = 0; i < 31; i += 1) {
+    if (i && i % 9 === 0) await delay(1100);   // stay under 10 a second
+    const res = await post('/api/plugin/v1/ha/phone-busy/notify', { phones: ['mobile_app_sam_s_pixel'], message: `n${i}` });
+    if (res.status === 429) refused += 1;
+  }
+  assert.equal(refused, 1);
+  await del('/api/widgets/phone-busy.html');
+});

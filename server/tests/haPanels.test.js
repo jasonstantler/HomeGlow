@@ -255,3 +255,77 @@ test('play_url takes only an address the route checked', () => {
   const noQueue = st('media_player.speaker', 'idle', { supported_features: 512 });
   assert.throws(() => rules.resolveAction({ access, entityId: 'media_player.speaker', action: 'play_url', value: { url: 'http://x', fromPluginServer: true, enqueue: 'add' }, state: noQueue }), /cannot queue/);
 });
+
+// Phones: the household's Companion app phones, and what a plugin may send them.
+const SERVICES = [
+  { domain: 'light', services: { turn_on: {} } },
+  { domain: 'notify', services: { notify: {}, persistent_notification: {}, mobile_app_jason_s_pixel: {}, mobile_app_sam_s_iphone: {}, mobile_app_old_tablet: {}, send_message: {} } },
+];
+const DEVICES = [
+  { id: 'd1', name: "Jason's Pixel", manufacturer: 'Google', model: 'Pixel 8', sw_version: '15', identifiers: [['mobile_app', 'abc']] },
+  { id: 'd2', name: "Sam's iPhone", name_by_user: 'Sam', manufacturer: 'Apple', model: 'iPhone16,1', sw_version: '18.1', identifiers: [['mobile_app', 'def']] },
+  { id: 'd3', name: 'Jasons Pixel', manufacturer: 'Google', identifiers: [['zha', 'x']] },
+];
+
+test('phones are the notify.mobile_app_* actions, named and told apart by their devices', () => {
+  const phones = rules.phonesFrom(SERVICES, DEVICES);
+  assert.deepEqual(phones, [
+    { id: 'mobile_app_jason_s_pixel', name: "Jason's Pixel", platform: 'android' },
+    { id: 'mobile_app_old_tablet', name: 'Old Tablet', platform: null },
+    { id: 'mobile_app_sam_s_iphone', name: 'Sam', platform: 'ios' },
+  ]);
+  // No device list (no WebSocket): still every phone, by its action's name.
+  assert.deepEqual(rules.phonesFrom(SERVICES, null).map((p) => [p.id, p.platform]),
+    [['mobile_app_jason_s_pixel', null], ['mobile_app_old_tablet', null], ['mobile_app_sam_s_iphone', null]]);
+  assert.deepEqual(rules.phonesFrom(null, null), []);
+});
+
+test('a message is a title and text; urgent rings through silent on each kind of phone', () => {
+  const [android, tablet, iphone] = rules.phonesFrom(SERVICES, DEVICES);
+  const plain = rules.notifyCall({ phone: android, pluginId: 'grill-card', title: 'Grill', message: 'Brisket is 198°.' });
+  assert.deepEqual(plain, { domain: 'notify', service: 'mobile_app_jason_s_pixel', data: { title: 'Grill', message: 'Brisket is 198°.', data: { priority: 'high', ttl: 0 } } });
+  assert.deepEqual(rules.notifyCall({ phone: android, pluginId: 'grill-card', message: 'Fire', urgent: true, tag: 'problem' }).data.data,
+    { priority: 'high', ttl: 0, channel: 'alarm_stream', tag: 'homeglow-grill-card-problem' });
+  assert.deepEqual(rules.notifyCall({ phone: iphone, pluginId: 'grill-card', message: 'Fire', urgent: true }).data.data,
+    { push: { sound: { name: 'default', critical: 1, volume: 1.0 } } });
+  assert.deepEqual(rules.notifyCall({ phone: iphone, pluginId: 'grill-card', message: 'Timer done' }).data.data, {});
+  // Not sure which: both, and each app ignores the other's.
+  const both = rules.notifyCall({ phone: tablet, pluginId: 'grill-card', message: 'Fire', urgent: true }).data.data;
+  assert.equal(both.channel, 'alarm_stream');
+  assert.equal(both.push.sound.critical, 1);
+});
+
+test('a plugin sends only text: trimmed, plain, and never notify data of its own', () => {
+  const [android] = rules.phonesFrom(SERVICES, DEVICES);
+  const call = rules.notifyCall({ phone: android, pluginId: 'p', title: 'x'.repeat(200), message: `  ${'y'.repeat(400)}\u0007 `, data: { clickAction: 'https://evil.example', command: 'command_activity' } });
+  assert.equal(call.data.title.length, 60);
+  assert.equal(call.data.message.length, 300);
+  assert.deepEqual(call.data.data, { priority: 'high', ttl: 0 });
+  assert.throws(() => rules.notifyCall({ phone: android, pluginId: 'p', message: '   ' }), /needs a message/);
+  assert.throws(() => rules.notifyCall({ phone: android, pluginId: 'p', message: 'hi', urgent: 'yes' }), /urgent/);
+  for (const tag of ['Has Caps', 'a'.repeat(41), '-lead', 'semi;colon', 7]) {
+    assert.throws(() => rules.notifyCall({ phone: android, pluginId: 'p', message: 'hi', tag }), /tag/, String(tag));
+  }
+  // Taking a message back reaches only the plugin's own label.
+  assert.deepEqual(rules.clearCall({ phone: android, pluginId: 'grill-card', tag: 'food' }),
+    { domain: 'notify', service: 'mobile_app_jason_s_pixel', data: { message: 'clear_notification', data: { tag: 'homeglow-grill-card-food' } } });
+  assert.throws(() => rules.clearCall({ phone: android, pluginId: 'p' }), /tag/);
+});
+
+test('only the household\'s phones, up to eight at once', () => {
+  const phones = rules.phonesFrom(SERVICES, DEVICES);
+  assert.deepEqual(rules.pickPhones(['mobile_app_sam_s_iphone', 'mobile_app_sam_s_iphone'], phones).map((p) => p.id), ['mobile_app_sam_s_iphone']);
+  assert.throws(() => rules.pickPhones(['notify'], phones), (e) => e.status === 404);
+  assert.throws(() => rules.pickPhones(['persistent_notification'], phones), (e) => e.status === 404);
+  for (const bad of [[], 'mobile_app_sam_s_iphone', [7], Array.from({ length: 9 }, () => 'mobile_app_sam_s_iphone'), undefined]) {
+    assert.throws(() => rules.pickPhones(bad, phones), (e) => e.status === 400, JSON.stringify(bad));
+  }
+});
+
+test('a manifest may ask for notify on its own, as true or false only', () => {
+  assert.deepEqual(rules.validateManifestAccess({ notify: true }), []);
+  assert.equal(rules.accessFromManifest({ notify: true }).notify, true);
+  assert.equal(rules.accessFromManifest({ domains: ['sensor'] }).notify, false);
+  assert.ok(rules.validateManifestAccess({ notify: 'yes' }).some((e) => /notify must be true or false/.test(e)));
+  assert.ok(rules.validateManifestAccess({ notify: false }).some((e) => /needs entities, domains or notify/.test(e)));
+});
