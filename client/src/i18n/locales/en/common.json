@@ -83,7 +83,19 @@
     "unpin": "Unpin",
     "unpinHelp": "Go back to the schedule",
     "switchTo": "Switch to",
-    "saveLayout": "Save this tab's layout to {{name}}",
-    "saveLayoutHelp": "Move/Resize then edits this mode's layout"
+    "editLayout": "Edit {{name}}'s layout",
+    "editLayoutHelp": "Arrange this mode on a preview",
+    "editor": {
+      "title": "{{name}} layout",
+      "help": "Drag and resize widgets for this mode. Your normal dashboard isn't changed.",
+      "tab": "Tab",
+      "tabNumber": "Tab {{number}}",
+      "widgets": "Widgets ({{count}})",
+      "fromOtherTab": "From another tab",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving…",
+      "empty": "No widgets on this tab in this mode. Add some from Widgets."
+    }
   }
 }

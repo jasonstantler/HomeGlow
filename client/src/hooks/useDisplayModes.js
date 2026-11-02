@@ -138,6 +138,22 @@ export default function useDisplayModes({ deviceSettings, apiDeviceUrl, onSaved,
     }
   }, [settings.modes, saveModes]);
 
+  // Save the layout editor's drafts: { tab: { saved, hidden } } for one mode.
+  const saveModeTabs = useCallback(async (modeId, drafts) => {
+    const modes = settings.modes.map((mode) => {
+      if (mode.id !== modeId) return mode;
+      const layouts = { ...mode.layouts };
+      const hidden = { ...mode.hidden };
+      Object.entries(drafts).forEach(([tab, draft]) => {
+        layouts[tab] = draft.saved;
+        if (draft.hidden.length > 0) hidden[tab] = draft.hidden;
+        else delete hidden[tab];
+      });
+      return { ...mode, layouts, hidden };
+    });
+    await saveModes(modes);
+  }, [settings.modes, saveModes]);
+
   const shownMode = settings.modes.find((mode) => mode.id === shownId) || null;
 
   return {
@@ -148,6 +164,7 @@ export default function useDisplayModes({ deviceSettings, apiDeviceUrl, onSaved,
     pinMode,
     unpin,
     saveTabLayout,
+    saveModeTabs,
     lastActivityRef,
   };
 }

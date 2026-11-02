@@ -3,6 +3,7 @@ import { Box, IconButton } from '@mui/material';
 import { CloseFullscreen, Fullscreen, OpenInFull } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 import GridLayout, { getCompactor } from 'react-grid-layout';
+import { createScaledStrategy } from 'react-grid-layout/core';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import axios from 'axios';
@@ -115,6 +116,9 @@ const WidgetContainer = ({
   // the API takes. A display mode with its own layout for the tab passes
   // one (utils/displayModes.js); otherwise layouts save as always.
   onSaveLayouts,
+  // How much the grid is scaled on screen (the mode layout editor shows it
+  // smaller), so dragging follows the finger.
+  scale = 1,
 }) => {
   const { t } = useTranslation('common');
   const API_DEVICE_URL = getDeviceApiBase(API_BASE_URL);
@@ -142,6 +146,7 @@ const WidgetContainer = ({
   // tab. Read when a save is requested, not when the debounced save fires.
   const widgetsRef = useRef(widgets);
   widgetsRef.current = widgets;
+  const scaledStrategy = useMemo(() => (scale !== 1 ? createScaledStrategy(scale) : undefined), [scale]);
   const onSaveLayoutsRef = useRef(onSaveLayouts);
   onSaveLayoutsRef.current = onSaveLayouts;
 
@@ -933,6 +938,7 @@ const WidgetContainer = ({
           }}
           resizeConfig={{ enabled: false }}
           compactor={GRID_COMPACTOR}
+          positionStrategy={scaledStrategy}
           onLayoutChange={handleLayoutChange}
         >
           {widgets.map((widget) => {

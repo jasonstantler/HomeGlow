@@ -971,7 +971,7 @@
     "turnedOn": "{{name}} está activado. Envía una prueba para comprobarlo."
   },
   "modes": {
-    "help": "Los modos cambian cómo se ve esta pantalla en distintos momentos: un diseño de Mañana, una Noche atenuada, etc. Pertenecen a esta pantalla, como sus diseños. Para dar a un modo su propio diseño en una pestaña, cambia a ese modo desde la etiqueta abajo a la izquierda, organiza la pestaña y elige \"Guardar el diseño de esta pestaña\" en ese menú.",
+    "help": "Los modos cambian cómo se ve esta pantalla en distintos momentos: un diseño de Mañana, una Noche atenuada, etc. Pertenecen a esta pantalla. Usa Configurar diseño para organizar un modo en una vista previa de tu panel; tu panel normal no cambia.",
     "listHeading": "Modos",
     "add": "Añadir modo",
     "empty": "Aún no hay modos. Añade uno para empezar.",
@@ -1002,13 +1002,12 @@
     },
     "startsOn": "Empieza en {{tab}}",
     "dimChip": "Se atenúa casi a negro",
-    "layoutsChip": "Diseños: {{tabs}}",
     "noLayouts": "Sin diseños guardados",
     "outOfDate": "El diseño de {{tab}} está desactualizado: se añadió {{widgets}} después de guardarlo. Aparecen en el primer hueco libre, u ocultos si no hay espacio.",
     "tabNumber": "Pestaña {{number}}",
     "behaviorHeading": "Cómo funcionan los modos",
     "showLabel": "Etiqueta del modo en la pantalla",
-    "showLabelHelp": "Una pequeña etiqueta abajo a la izquierda, junto a la barra, muestra el modo. Tócala para fijar, cambiar de modo o guardar un diseño.",
+    "showLabelHelp": "Una pequeña etiqueta abajo a la izquierda, junto a la barra, muestra el modo. Tócala para fijar, cambiar de modo o editar el diseño.",
     "fade": "Fundido rápido al cambiar",
     "fadeHelp": "Un fundido de medio segundo cuando cambia el modo.",
     "touchWait": "Esperar tras un toque",
@@ -1045,10 +1044,13 @@
     "dim": "Atenuar la pantalla casi a negro",
     "dimHelp": "Se atenúa casi a negro mientras el modo está activo. Un toque la despierta.",
     "layouts": "Diseños guardados",
-    "layoutsHelp": "Pestañas para las que este modo tiene su propio diseño. Las demás se ven normal.",
-    "clearLayout": "Quitar",
     "delete": "Eliminar modo",
     "cancel": "Cancelar",
-    "saveMode": "Guardar modo"
+    "saveMode": "Guardar modo",
+    "editDetails": "Editar detalles",
+    "setUpLayout": "Configurar diseño",
+    "editTabLayout": "Editar el diseño de {{tab}}",
+    "confirmClear": "¿Quitar el diseño de {{name}} para {{tab}}? Esa pestaña se verá normal en este modo.",
+    "cleared": "Se quitó el diseño de {{tab}}."
   }
 }

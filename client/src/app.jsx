@@ -63,7 +63,13 @@ import { setHouseholdChangesMode, subscribeHouseholdChanges } from './utils/hous
 import { updateDisplayDimming, setDimmingPaused, setDimmingHold } from './utils/displayDim.js';
 import useDisplayModes from './hooks/useDisplayModes.js';
 import ModeBadge from './components/ModeBadge.jsx';
-import { MODE_DIM_LEVEL, placeModeLayout, visibleGridRows } from './utils/displayModes.js';
+import {
+  MODE_DIM_LEVEL,
+  MODE_LAYOUTS_SAVED_EVENT,
+  OPEN_MODE_LAYOUT_EDITOR_EVENT,
+  placeModeLayout,
+  visibleGridRows,
+} from './utils/displayModes.js';
 import { readGridMetrics } from './utils/gridMetrics.js';
 import { getServerTimezoneSync } from './utils/timezone.js';
 import { THEME_TOKENS_APPLIED_EVENT } from './utils/pluginThemeBridge.js';
@@ -121,6 +127,7 @@ const scheduleIdleWarmup = (work) => {
 };
 
 const AdminPanel = lazy(loadAdminPanel);
+const ModeLayoutEditor = lazy(() => import('./components/ModeLayoutEditor.jsx'));
 const CalendarWidget = lazy(loadCalendarWidget);
 const PhotoWidget = lazy(loadPhotoWidget);
 const WeatherWidget = lazy(loadWeatherWidget);
@@ -1371,18 +1378,19 @@ const App = () => {
 
   // The widgets on the active tab that are turned on here, with their usual
   // size: what a mode's saved layout for the tab is laid over.
+  const enabledWidgetNames = useMemo(() => [
+    ...['calendar', 'weather', 'chores', 'photos'].filter((name) => widgetSettings[name]?.enabled),
+    ...installedPlugins
+      .filter((plugin) => pluginSettings[plugin.filename]?.enabled)
+      .map((plugin) => `plugin:${plugin.filename}`),
+  ], [widgetSettings, pluginSettings, installedPlugins]);
+
   const widgetsOnActiveTab = useMemo(() => {
-    const names = [
-      ...['calendar', 'weather', 'chores', 'photos'].filter((name) => widgetSettings[name]?.enabled),
-      ...installedPlugins
-        .filter((plugin) => pluginSettings[plugin.filename]?.enabled)
-        .map((plugin) => `plugin:${plugin.filename}`),
-    ];
-    return names
+    return enabledWidgetNames
       .filter((name) => isWidgetAssignedToTab(name, activeTab))
       .map((name) => ({ name, size: getWidgetLayoutForTab(name, activeTab) || { w: 4, h: 3 } }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [widgetSettings, pluginSettings, installedPlugins, widgetAssignments, activeTab]);
+  }, [enabledWidgetNames, widgetAssignments, activeTab]);
 
   // While a mode with a layout for this tab is on: where each widget goes,
   // and which newcomers have no room (utils/displayModes.js placeModeLayout).
@@ -1390,10 +1398,15 @@ const App = () => {
     const saved = shownMode?.layouts?.[activeTab];
     if (!saved) return null;
     const rows = typeof window === 'undefined' ? Infinity : visibleGridRows(window.innerHeight, readGridMetrics());
-    return placeModeLayout({ saved, widgets: widgetsOnActiveTab, rows });
-  }, [shownMode, activeTab, widgetsOnActiveTab]);
+    return placeModeLayout({
+      saved,
+      widgets: widgetsOnActiveTab,
+      hiddenNames: shownMode.hidden?.[activeTab] || [],
+      available: new Set(enabledWidgetNames),
+      rows,
+    });
+  }, [shownMode, activeTab, widgetsOnActiveTab, enabledWidgetNames]);
 
-  const hiddenByMode = (name) => Boolean(modeTabLayout?.hidden.includes(name));
   const layoutOnActiveTab = (name) => (modeTabLayout
     ? modeTabLayout.placed[name] || null
     : getWidgetLayoutForTab(name, activeTab));
@@ -1412,24 +1425,16 @@ const App = () => {
     };
   }, [modeTabLayout, shownMode, displayModes.saveTabLayout]);
 
-  // "Save this tab's layout to <mode>": what's on screen now becomes the
-  // mode's layout for this tab.
-  const saveActiveTabToMode = () => {
-    if (!shownMode) return;
-    const items = {};
-    widgetsOnActiveTab.forEach(({ name }) => {
-      if (hiddenByMode(name)) return;
-      const item = layoutOnActiveTab(name);
-      if (item) items[name] = { x: item.x, y: item.y, w: item.w, h: item.h };
-    });
-    void displayModes.saveTabLayout(shownMode.id, activeTab, items);
-  };
 
-  const widgets = useMemo(() => {
+
+  // The widgets for one tab, as the grid takes them: `include(name)` says
+  // which to show and `layoutOf(name)` where. The dashboard and the mode
+  // layout editor both build from this.
+  const makeWidgetList = (tabNumber, include, layoutOf) => {
     const result = [];
 
-    if (widgetSettings.calendar.enabled && isWidgetAssignedToTab('calendar', activeTab) && !hiddenByMode('calendar')) {
-      const dbLayout = layoutOnActiveTab('calendar');
+    if (widgetSettings.calendar.enabled && include('calendar')) {
+      const dbLayout = layoutOf('calendar');
       result.push({
         id: 'calendar-widget',
         transparent: Boolean(widgetSettings.calendar.transparent),
@@ -1442,16 +1447,16 @@ const App = () => {
           <Suspense fallback={<WidgetLoadingFallback label="calendar" />}>
             <CalendarWidget
               hiddenControls={hiddenControls}
-              activeTab={activeTab}
-              activeTabConfigJson={tabs.find((tab) => tab.number === activeTab)?.config_json || null}
+              activeTab={tabNumber}
+              activeTabConfigJson={tabs.find((tab) => tab.number === tabNumber)?.config_json || null}
             />
           </Suspense>
         ),
       });
     }
 
-    if (widgetSettings.weather.enabled && isWidgetAssignedToTab('weather', activeTab) && !hiddenByMode('weather')) {
-      const dbLayout = layoutOnActiveTab('weather');
+    if (widgetSettings.weather.enabled && include('weather')) {
+      const dbLayout = layoutOf('weather');
       result.push({
         id: 'weather-widget',
         transparent: Boolean(widgetSettings.weather.transparent),
@@ -1465,8 +1470,8 @@ const App = () => {
             <WeatherWidget
               hiddenControls={hiddenControls}
               refreshInterval={widgetSettings.weather.refreshInterval || 0}
-              activeTab={activeTab}
-              activeTabConfigJson={tabs.find((tab) => tab.number === activeTab)?.config_json || null}
+              activeTab={tabNumber}
+              activeTabConfigJson={tabs.find((tab) => tab.number === tabNumber)?.config_json || null}
               allTabConfigs={tabs}
             />
           </Suspense>
@@ -1474,8 +1479,8 @@ const App = () => {
       });
     }
 
-    if (widgetSettings.chores.enabled && isWidgetAssignedToTab('chores', activeTab) && !hiddenByMode('chores')) {
-      const dbLayout = layoutOnActiveTab('chores');
+    if (widgetSettings.chores.enabled && include('chores')) {
+      const dbLayout = layoutOf('chores');
       result.push({
         id: 'chores-widget',
         transparent: Boolean(widgetSettings.chores.transparent),
@@ -1492,8 +1497,8 @@ const App = () => {
       });
     }
 
-    if (widgetSettings.photos.enabled && isWidgetAssignedToTab('photos', activeTab) && !hiddenByMode('photos')) {
-      const dbLayout = layoutOnActiveTab('photos');
+    if (widgetSettings.photos.enabled && include('photos')) {
+      const dbLayout = layoutOf('photos');
       result.push({
         id: 'photos-widget',
         transparent: Boolean(widgetSettings.photos.transparent),
@@ -1515,9 +1520,9 @@ const App = () => {
       if (!pSettings.enabled) return;
 
       const pluginWidgetName = `plugin:${plugin.filename}`;
-      if (!isWidgetAssignedToTab(pluginWidgetName, activeTab) || hiddenByMode(pluginWidgetName)) return;
+      if (!include(pluginWidgetName)) return;
 
-      const dbLayout = layoutOnActiveTab(pluginWidgetName);
+      const dbLayout = layoutOf(pluginWidgetName);
       result.push({
         id: `plugin-${plugin.filename}`,
         transparent: Boolean(pSettings.transparent),
@@ -1540,7 +1545,58 @@ const App = () => {
     });
 
     return result;
-  }, [widgetSettings, pluginSettings, activeTab, widgetAssignments, installedPlugins, displayTheme, themeColors, demoStatus.demo, hiddenControls, frameTouch, modeTabLayout]);
+  };
+
+  // ---- The mode layout editor (components/ModeLayoutEditor.jsx) ----
+  // Opened from Admin → Modes or the mode label: { modeId, tab }.
+  const [layoutEditor, setLayoutEditor] = useState(null);
+  useEffect(() => {
+    const open = (event) => {
+      const { modeId, tab } = event.detail || {};
+      if (modeId) setLayoutEditor({ modeId, tab: Number(tab) || activeTab });
+    };
+    window.addEventListener(OPEN_MODE_LAYOUT_EDITOR_EVENT, open);
+    return () => window.removeEventListener(OPEN_MODE_LAYOUT_EDITOR_EVENT, open);
+  }, [activeTab]);
+  const editingMode = layoutEditor
+    ? displayModes.settings.modes.find((mode) => mode.id === layoutEditor.modeId) || null
+    : null;
+  const editorWidgets = useMemo(() => enabledWidgetNames.map((name) => {
+    if (!name.startsWith('plugin:')) return { name };
+    const plugin = installedPlugins.find((item) => `plugin:${item.filename}` === name);
+    return { name, label: plugin?.name || name.slice('plugin:'.length) };
+  }), [enabledWidgetNames, installedPlugins]);
+  const tabWidgetsFor = useCallback(
+    (tabNumber) => enabledWidgetNames
+      .filter((name) => isWidgetAssignedToTab(name, tabNumber))
+      .map((name) => ({ name, layout: getWidgetLayoutForTab(name, tabNumber) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [enabledWidgetNames, widgetAssignments]
+  );
+  const widgetSizeOf = (name) => {
+    const placed = (widgetAssignments[name] || []).find((item) => item.layout_w);
+    if (placed) return { w: placed.layout_w, h: placed.layout_h };
+    const plugin = installedPlugins.find((item) => `plugin:${item.filename}` === name);
+    if (plugin) {
+      const { defaultSize } = pluginGridSize(plugin);
+      return { w: defaultSize.width, h: defaultSize.height };
+    }
+    return { w: 6, h: 4 };
+  };
+  const saveEditorDrafts = async (drafts) => {
+    await displayModes.saveModeTabs(layoutEditor.modeId, drafts);
+    window.dispatchEvent(new Event(MODE_LAYOUTS_SAVED_EVENT));
+  };
+
+  const widgets = useMemo(
+    () => makeWidgetList(
+      activeTab,
+      (name) => (modeTabLayout ? Boolean(modeTabLayout.placed[name]) : isWidgetAssignedToTab(name, activeTab)),
+      layoutOnActiveTab
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [widgetSettings, pluginSettings, activeTab, widgetAssignments, installedPlugins, displayTheme, themeColors, demoStatus.demo, hiddenControls, frameTouch, modeTabLayout]
+  );
 
   // Mobile stack (issue #118): same widget content nodes, fixed order, photos
   // excluded, grid metadata ignored.
@@ -1643,8 +1699,23 @@ const App = () => {
             pinned={displayModes.pinned}
             onPin={displayModes.pinMode}
             onUnpin={displayModes.unpin}
-            onSaveLayout={saveActiveTabToMode}
+            onEditLayout={() => setLayoutEditor({ modeId: shownMode.id, tab: activeTab })}
           />
+        )}
+        {editingMode && (
+          <Suspense fallback={null}>
+            <ModeLayoutEditor
+              mode={editingMode}
+              tabs={tabs}
+              startTab={layoutEditor.tab}
+              widgets={editorWidgets}
+              tabWidgets={tabWidgetsFor}
+              sizeOf={widgetSizeOf}
+              buildWidgets={(tabNumber, saved) => makeWidgetList(tabNumber, (name) => Boolean(saved[name]), (name) => saved[name] || null)}
+              onSave={saveEditorDrafts}
+              onClose={() => setLayoutEditor(null)}
+            />
+          </Suspense>
         )}
         {/* Its corner is the Save Layout button's while the layout is
             unlocked, which is never for long. */}
@@ -1658,7 +1729,7 @@ const App = () => {
         {isMobile && mobileWidgets.length > 0 && (
           <MobileDashboard widgets={mobileWidgets} />
         )}
-        {!isMobile && widgets.length > 0 && (
+        {!isMobile && widgets.length > 0 && !layoutEditor && (
           <WidgetContainer
             widgets={widgets}
             locked={widgetsLocked}

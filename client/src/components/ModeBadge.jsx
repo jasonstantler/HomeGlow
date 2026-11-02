@@ -1,19 +1,19 @@
 import React, { useState } from 'react';
 import { Box, ButtonBase, Divider, ListItemIcon, ListItemText, ListSubheader, Menu, MenuItem } from '@mui/material';
-import { PushPin, PushPinOutlined, SaveOutlined } from '@mui/icons-material';
+import { DashboardCustomizeOutlined, PushPin, PushPinOutlined } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 
 /**
  * The mode label on the wall (utils/displayModes.js): which mode is on, and a
- * menu to pin it, switch to another mode, or save this tab's layout to it.
+ * menu to pin it, switch to another mode, or edit its layout.
  *
  * - modes: this display's modes
  * - shownMode: the mode on screen, or null for the normal layout
  * - pinned: whether a pin is holding the current view
  * - onPin(modeId | null), onUnpin()
- * - onSaveLayout(): save this tab as the shown mode's layout
+ * - onEditLayout(): open the shown mode's layout editor on this tab
  */
-const ModeBadge = ({ modes, shownMode, pinned, onPin, onUnpin, onSaveLayout }) => {
+const ModeBadge = ({ modes, shownMode, pinned, onPin, onUnpin, onEditLayout }) => {
   const { t } = useTranslation('common');
   const [anchor, setAnchor] = useState(null);
   const close = () => setAnchor(null);
@@ -95,9 +95,9 @@ const ModeBadge = ({ modes, shownMode, pinned, onPin, onUnpin, onSaveLayout }) =
         ))}
         {shownMode && <Divider />}
         {shownMode && (
-          <MenuItem onClick={choose(onSaveLayout)}>
-            <ListItemIcon><SaveOutlined fontSize="small" /></ListItemIcon>
-            <ListItemText primary={t('modes.saveLayout', { name: shownMode.name })} secondary={t('modes.saveLayoutHelp')} />
+          <MenuItem onClick={choose(onEditLayout)}>
+            <ListItemIcon><DashboardCustomizeOutlined fontSize="small" /></ListItemIcon>
+            <ListItemText primary={t('modes.editLayout', { name: shownMode.name })} secondary={t('modes.editLayoutHelp')} />
           </MenuItem>
         )}
       </Menu>

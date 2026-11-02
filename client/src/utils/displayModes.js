@@ -20,6 +20,11 @@
 // Where a display keeps its modes in its device settings.
 export const DISPLAY_MODES_KEY = 'displayModes';
 
+// Window events: Admin asks the dashboard to open the layout editor
+// ({ detail: { modeId, tab } }), and the editor says it saved.
+export const OPEN_MODE_LAYOUT_EDITOR_EVENT = 'homeglow:open-mode-layout-editor';
+export const MODE_LAYOUTS_SAVED_EVENT = 'homeglow:mode-layouts-saved';
+
 export const MINUTES_PER_DAY = 24 * 60;
 export const MINUTES_PER_WEEK = 7 * MINUTES_PER_DAY;
 
@@ -58,6 +63,19 @@ function normalizeLayoutItem(raw) {
   const h = Number(raw.h);
   if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
   return { x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)), w: Math.round(w), h: Math.round(h) };
+}
+
+// { tab: [widget names] } a mode hides on that tab.
+function normalizeHidden(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [tab, names] of Object.entries(raw)) {
+    const tabNumber = Number(tab);
+    if (!Number.isInteger(tabNumber) || !Array.isArray(names)) continue;
+    const clean = [...new Set(names.filter((name) => typeof name === 'string' && name))];
+    if (clean.length > 0) out[tabNumber] = clean;
+  }
+  return out;
 }
 
 function normalizeLayouts(raw) {
@@ -100,6 +118,7 @@ export function normalizeMode(raw) {
     startTab: Number.isInteger(startTab) && startTab > 0 ? startTab : null,
     dim: raw.dim === true,
     layouts: normalizeLayouts(raw.layouts),
+    hidden: normalizeHidden(raw.hidden),
   };
 }
 
@@ -241,16 +260,22 @@ export function firstOpenSpot({ w, h }, taken, cols = 12, rows = Infinity) {
 // Where every widget on a tab goes while a mode with a layout for it is on.
 // `saved` is the mode's snapshot for the tab ({ name: {x,y,w,h} }); `widgets`
 // is what's on the tab now: [{ name, size: {w,h} }] in a stable order.
-// Returns { placed: { name: {x,y,w,h} }, hidden: [names], added: [names] }:
-// snapshot widgets where they were saved, newcomers in the first open spot
-// on screen (`rows` visible rows), and newcomers with no room hidden.
-export function placeModeLayout({ saved, widgets, cols = 12, rows = Infinity }) {
+// `hiddenNames` are widgets the mode hides on this tab, and `available` the
+// names turned on anywhere on this display: a snapshot can bring in a widget
+// from another tab. Returns { placed: { name: {x,y,w,h} }, hidden: [names],
+// added: [names] }: snapshot widgets where they were saved, newcomers in the
+// first open spot on screen (`rows` visible rows), and newcomers with no room
+// hidden. Widgets the mode hides are in neither.
+export function placeModeLayout({ saved, widgets, hiddenNames = [], available = null, cols = 12, rows = Infinity }) {
   const placed = {};
   const hidden = [];
   const added = [];
   const taken = [];
   const newcomers = [];
+  const skip = new Set(hiddenNames);
+  const onTab = new Set(widgets.map((widget) => widget.name));
   for (const widget of widgets) {
+    if (skip.has(widget.name)) continue;
     const item = saved?.[widget.name];
     if (item) {
       placed[widget.name] = { ...item };
@@ -258,6 +283,13 @@ export function placeModeLayout({ saved, widgets, cols = 12, rows = Infinity }) 
     } else {
       newcomers.push(widget);
     }
+  }
+  // Brought in from other tabs: shown where saved, while still turned on.
+  for (const [name, item] of Object.entries(saved || {})) {
+    if (onTab.has(name) || skip.has(name)) continue;
+    if (available && !available.has(name)) continue;
+    placed[name] = { ...item };
+    taken.push(item);
   }
   for (const widget of newcomers) {
     const spot = firstOpenSpot({ w: widget.size?.w || 4, h: widget.size?.h || 3 }, taken, cols, rows);
@@ -277,7 +309,8 @@ export function placeModeLayout({ saved, widgets, cols = 12, rows = Infinity }) 
 export function staleModeTabs(mode, onTab) {
   const out = {};
   for (const [tab, saved] of Object.entries(mode?.layouts || {})) {
-    const missing = (onTab?.[tab] || []).filter((name) => !saved[name]);
+    const hidden = new Set(mode?.hidden?.[tab] || []);
+    const missing = (onTab?.[tab] || []).filter((name) => !saved[name] && !hidden.has(name));
     if (missing.length > 0) out[tab] = missing;
   }
   return out;
@@ -297,4 +330,53 @@ export function scheduleDaysKey(days) {
   if (set === '1,2,3,4,5') return 'weekdays';
   if (set === '0,6') return 'weekends';
   return null;
+}
+
+// ---- The layout editor's draft for one tab -------------------------------
+// A draft is { saved: { name: {x,y,w,h} }, hidden: [names] }, what a mode
+// stores for the tab in layouts[tab] and hidden[tab].
+
+// Start from the mode's layout for the tab, else from the tab's usual one.
+// `widgets` is what's on the tab normally: [{ name, layout: {x,y,w,h} | null }].
+export function startDraft(mode, tab, widgets) {
+  const saved = mode?.layouts?.[tab];
+  if (saved) {
+    // Widgets added to the tab since show where the wall shows them: the
+    // first open spot.
+    const hidden = [...(mode.hidden?.[tab] || [])];
+    const draft = { saved: { ...saved }, hidden };
+    for (const widget of widgets) {
+      if (draft.saved[widget.name] || hidden.includes(widget.name)) continue;
+      const size = widget.layout ? { w: widget.layout.w, h: widget.layout.h } : { w: 4, h: 3 };
+      draft.saved[widget.name] = firstOpenSpot(size, Object.values(draft.saved));
+    }
+    return draft;
+  }
+  const draft = { saved: {}, hidden: [] };
+  for (const widget of widgets) {
+    if (widget.layout) {
+      draft.saved[widget.name] = { ...widget.layout };
+    } else {
+      draft.saved[widget.name] = firstOpenSpot({ w: 4, h: 3 }, Object.values(draft.saved));
+    }
+  }
+  return draft;
+}
+
+// Show a widget in this mode: back where it was saved, else in the first open
+// spot on screen, else below everything.
+export function showInDraft(draft, name, size = { w: 4, h: 3 }, rows = Infinity) {
+  const hidden = draft.hidden.filter((item) => item !== name);
+  if (draft.saved[name]) return { saved: draft.saved, hidden };
+  const taken = Object.values(draft.saved);
+  const spot = firstOpenSpot(size, taken, 12, rows) || firstOpenSpot(size, taken, 12);
+  return { saved: { ...draft.saved, [name]: spot }, hidden };
+}
+
+// Hide a widget in this mode. One that's on the tab normally is remembered as
+// hidden, so it doesn't come back as a newcomer.
+export function hideInDraft(draft, name, onTab) {
+  const { [name]: _removed, ...saved } = draft.saved;
+  const hidden = onTab && !draft.hidden.includes(name) ? [...draft.hidden, name] : draft.hidden;
+  return { saved, hidden };
 }

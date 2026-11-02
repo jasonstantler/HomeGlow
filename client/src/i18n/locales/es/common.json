@@ -83,7 +83,19 @@
     "unpin": "Dejar de fijar",
     "unpinHelp": "Volver al horario",
     "switchTo": "Cambiar a",
-    "saveLayout": "Guardar el diseño de esta pestaña en {{name}}",
-    "saveLayoutHelp": "Mover/Cambiar tamaño editará entonces el diseño de este modo"
+    "editLayout": "Editar el diseño de {{name}}",
+    "editLayoutHelp": "Organiza este modo en una vista previa",
+    "editor": {
+      "title": "Diseño de {{name}}",
+      "help": "Arrastra y cambia el tamaño de los widgets para este modo. Tu panel normal no cambia.",
+      "tab": "Pestaña",
+      "tabNumber": "Pestaña {{number}}",
+      "widgets": "Widgets ({{count}})",
+      "fromOtherTab": "De otra pestaña",
+      "cancel": "Cancelar",
+      "save": "Guardar",
+      "saving": "Guardando…",
+      "empty": "No hay widgets en esta pestaña en este modo. Añade algunos desde Widgets."
+    }
   }
 }

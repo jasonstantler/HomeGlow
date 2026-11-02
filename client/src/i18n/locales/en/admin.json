@@ -971,7 +971,7 @@
     "turnedOn": "{{name}} is on. Send a test to check."
   },
   "modes": {
-    "help": "Modes change how this display looks at different times: a Morning layout, a dimmed Night, and so on. They belong to this display, like its layouts. To give a mode its own layout for a tab, switch to the mode from the label at the bottom left of the wall, arrange the tab, and choose \"Save this tab's layout\" in that menu.",
+    "help": "Modes change how this display looks at different times: a Morning layout, a dimmed Night, and so on. They belong to this display. Use Set up layout to arrange a mode on a preview of your dashboard; your normal dashboard isn't changed.",
     "listHeading": "Modes",
     "add": "Add mode",
     "empty": "No modes yet. Add one to get started.",
@@ -1002,13 +1002,12 @@
     },
     "startsOn": "Starts on {{tab}}",
     "dimChip": "Dims to off",
-    "layoutsChip": "Layouts: {{tabs}}",
     "noLayouts": "No saved layouts",
     "outOfDate": "{{tab}} layout is out of date: {{widgets}} added since it was saved. They show in the first open spot, or stay hidden if there's no room.",
     "tabNumber": "Tab {{number}}",
     "behaviorHeading": "How modes behave",
     "showLabel": "Mode label on the wall",
-    "showLabelHelp": "A small label at the bottom left, beside the dock, shows the mode. Tap it to pin, switch modes or save a layout.",
+    "showLabelHelp": "A small label at the bottom left, beside the dock, shows the mode. Tap it to pin, switch modes or edit the layout.",
     "fade": "Quick fade when switching",
     "fadeHelp": "A half-second fade when the mode changes.",
     "touchWait": "Wait after a touch",
@@ -1045,10 +1044,13 @@
     "dim": "Dim the screen to off",
     "dimHelp": "Dims almost to black while the mode is on. A touch wakes it.",
     "layouts": "Saved layouts",
-    "layoutsHelp": "Tabs this mode has its own layout for. Other tabs look normal.",
-    "clearLayout": "Clear",
     "delete": "Delete mode",
     "cancel": "Cancel",
-    "saveMode": "Save mode"
+    "saveMode": "Save mode",
+    "editDetails": "Edit details",
+    "setUpLayout": "Set up layout",
+    "editTabLayout": "Edit the {{tab}} layout",
+    "confirmClear": "Remove {{name}}'s layout for {{tab}}? That tab will look normal in this mode.",
+    "cleared": "Removed the {{tab}} layout."
   }
 }

@@ -118,8 +118,8 @@ describe('placeModeLayout', () => {
     expect(out.placed.big).toBeUndefined();
   });
 
-  it('drops widgets no longer on the tab', () => {
-    const out = placeModeLayout({ saved, widgets: [{ name: 'calendar' }], rows: 10 });
+  it('drops widgets turned off on this display', () => {
+    const out = placeModeLayout({ saved, widgets: [{ name: 'calendar' }], available: new Set(['calendar']), rows: 10 });
     expect(Object.keys(out.placed)).toEqual(['calendar']);
   });
 });
@@ -136,5 +136,53 @@ describe('helpers', () => {
 
   it('visibleGridRows counts whole rows above the dock', () => {
     expect(visibleGridRows(2560, { rowHeight: 100, gap: 16 })).toBe(21);
+  });
+});
+
+describe('mode layout drafts', () => {
+  it('starts from the tab when the mode has no layout for it', async () => {
+    const { startDraft } = await import('./displayModes.js');
+    const draft = startDraft({ layouts: {} }, 1, [
+      { name: 'calendar', layout: { x: 0, y: 0, w: 6, h: 4 } },
+      { name: 'music', layout: null },
+    ]);
+    expect(draft.saved.calendar).toEqual({ x: 0, y: 0, w: 6, h: 4 });
+    expect(draft.saved.music).toEqual({ x: 6, y: 0, w: 4, h: 3 });
+    expect(draft.hidden).toEqual([]);
+  });
+
+  it('starts from the mode when it has a layout', async () => {
+    const { startDraft } = await import('./displayModes.js');
+    const mode = { layouts: { 1: { weather: { x: 0, y: 0, w: 12, h: 3 } } }, hidden: { 1: ['chores'] } };
+    expect(startDraft(mode, 1, [])).toEqual({ saved: { weather: { x: 0, y: 0, w: 12, h: 3 } }, hidden: ['chores'] });
+    // A widget added to the tab since shows in the first open spot.
+    const withNew = startDraft(mode, 1, [{ name: 'chores', layout: null }, { name: 'music', layout: { x: 0, y: 0, w: 6, h: 2 } }]);
+    expect(withNew.saved.music).toEqual({ x: 0, y: 3, w: 6, h: 2 });
+    expect(withNew.saved.chores).toBeUndefined();
+  });
+
+  it('hides and shows widgets', async () => {
+    const { hideInDraft, showInDraft } = await import('./displayModes.js');
+    let draft = { saved: { weather: { x: 0, y: 0, w: 12, h: 3 }, chores: { x: 0, y: 3, w: 6, h: 4 } }, hidden: [] };
+    draft = hideInDraft(draft, 'chores', true);
+    expect(draft).toEqual({ saved: { weather: { x: 0, y: 0, w: 12, h: 3 } }, hidden: ['chores'] });
+    draft = showInDraft(draft, 'chores', { w: 6, h: 4 });
+    expect(draft.hidden).toEqual([]);
+    expect(draft.saved.chores).toEqual({ x: 0, y: 3, w: 6, h: 4 });
+    // A widget from another tab isn't remembered as hidden.
+    expect(hideInDraft(draft, 'grill', false).hidden).toEqual([]);
+  });
+
+  it('placeModeLayout skips hidden widgets and brings in ones from other tabs', () => {
+    const out = placeModeLayout({
+      saved: { weather: { x: 0, y: 0, w: 12, h: 3 }, grill: { x: 0, y: 3, w: 6, h: 4 }, gone: { x: 6, y: 3, w: 6, h: 4 } },
+      widgets: [{ name: 'weather' }, { name: 'chores' }],
+      hiddenNames: ['chores'],
+      available: new Set(['weather', 'chores', 'grill']),
+      rows: 20,
+    });
+    expect(Object.keys(out.placed).sort()).toEqual(['grill', 'weather']);
+    expect(out.added).toEqual([]);
+    expect(out.hidden).toEqual([]);
   });
 });

@@ -18,7 +18,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material';
-import { Add, Save } from '@mui/icons-material';
+import { Add, DashboardCustomizeOutlined, Save } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 import { AdminFooter, AdminGroup, AdminNote, AdminRow } from './AdminRows.jsx';
 import { API_BASE_URL } from '../utils/apiConfig.js';
@@ -26,6 +26,8 @@ import { getDeviceApiBase } from '../utils/deviceName.js';
 import { editWholeNumber } from '../utils/wholeNumberField.js';
 import {
   DISPLAY_MODES_KEY,
+  MODE_LAYOUTS_SAVED_EVENT,
+  OPEN_MODE_LAYOUT_EDITOR_EVENT,
   MINUTES_PER_DAY,
   MODE_COLORS,
   findOverlaps,
@@ -47,6 +49,7 @@ const emptyMode = () => ({
   startTab: null,
   dim: false,
   layouts: {},
+  hidden: {},
 });
 
 const formatClock = (minutes, locale) => {
@@ -99,6 +102,13 @@ const ModesSettings = () => {
   }, [apiDeviceUrl, t]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // The layout editor saves on its own; show what it saved.
+  useEffect(() => {
+    const reload = () => { void load(); };
+    window.addEventListener(MODE_LAYOUTS_SAVED_EVENT, reload);
+    return () => window.removeEventListener(MODE_LAYOUTS_SAVED_EVENT, reload);
+  }, [load]);
 
   const persist = async (next, successText) => {
     setSaving(true);
@@ -158,10 +168,23 @@ const ModesSettings = () => {
 
   const saveMode = async (mode) => {
     const exists = stored.modes.some((item) => item.id === mode.id);
+    // Layouts are the editor's to change; keep what's stored.
     const modes = exists
-      ? stored.modes.map((item) => (item.id === mode.id ? mode : item))
+      ? stored.modes.map((item) => (item.id === mode.id ? { ...mode, layouts: item.layouts, hidden: item.hidden } : item))
       : [...stored.modes, mode];
     if (await persist({ ...stored, modes }, t('admin:modes.savedMode', { name: mode.name }))) setEditing(null);
+  };
+
+  const openEditor = (mode, tab) => {
+    window.dispatchEvent(new CustomEvent(OPEN_MODE_LAYOUT_EDITOR_EVENT, { detail: { modeId: mode.id, tab: Number(tab) } }));
+  };
+
+  const clearLayout = async (mode, tab) => {
+    if (!window.confirm(t('admin:modes.confirmClear', { tab: tabName(tab), name: mode.name }))) return;
+    const { [tab]: _layout, ...layouts } = mode.layouts;
+    const { [tab]: _hidden, ...hidden } = mode.hidden || {};
+    const modes = stored.modes.map((item) => (item.id === mode.id ? { ...item, layouts, hidden } : item));
+    await persist({ ...stored, modes }, t('admin:modes.cleared', { tab: tabName(tab) }));
   };
 
   const deleteMode = async (mode) => {
@@ -198,36 +221,47 @@ const ModesSettings = () => {
         {stored.modes.map((mode) => {
           const stale = staleModeTabs(mode, onTab);
           const layoutTabs = Object.keys(mode.layouts);
+          const setUpTab = mode.startTab
+            || tabs.find((tab) => !mode.layouts[tab.number])?.number
+            || tabs[0]?.number
+            || 1;
           return (
-            <ButtonBase
+            <Box
               key={mode.id}
-              onClick={() => setEditing(mode)}
-              aria-label={t('admin:modes.editMode', { name: mode.name })}
-              sx={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'flex-start',
-                gap: 1.5,
-                p: 1.5,
-                textAlign: 'left',
-                borderRadius: 'var(--hg-radius-md, 8px)',
-                '&:hover': { backgroundColor: 'action.hover' },
-              }}
+              sx={{ display: 'flex', gap: 1.5, p: 1.5, borderRadius: 'var(--hg-radius-md, 8px)' }}
             >
               <Box sx={{ width: 8, alignSelf: 'stretch', minHeight: 40, borderRadius: 1, backgroundColor: mode.color, flex: 'none' }} />
               <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography sx={{ fontWeight: 700 }}>{mode.name}</Typography>
+                <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                  <Typography sx={{ fontWeight: 700 }}>{mode.name}</Typography>
+                  <Button size="small" onClick={() => setEditing(mode)} aria-label={t('admin:modes.editMode', { name: mode.name })}>
+                    {t('admin:modes.editDetails')}
+                  </Button>
+                </Stack>
                 <Stack direction="row" spacing={0.75} useFlexGap sx={{ flexWrap: 'wrap', mt: 0.5 }}>
                   <Chip size="small" label={scheduleText(mode.schedule)} />
                   {mode.startTab && <Chip size="small" label={t('admin:modes.startsOn', { tab: tabName(mode.startTab) })} />}
                   {mode.dim && <Chip size="small" label={t('admin:modes.dimChip')} />}
-                  <Chip
-                    size="small"
-                    label={layoutTabs.length > 0
-                      ? t('admin:modes.layoutsChip', { tabs: layoutTabs.map(tabName).join(', ') })
-                      : t('admin:modes.noLayouts')}
-                  />
+                </Stack>
+                <Stack direction="row" spacing={0.75} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mt: 1 }}>
+                  <Typography variant="body2" color="text.secondary">{t('admin:modes.layouts')}:</Typography>
+                  {layoutTabs.length === 0 && (
+                    <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic' }}>{t('admin:modes.noLayouts')}</Typography>
+                  )}
+                  {layoutTabs.map((tab) => (
+                    <Chip
+                      key={tab}
+                      size="small"
+                      variant="outlined"
+                      label={tabName(tab)}
+                      onClick={() => openEditor(mode, tab)}
+                      onDelete={() => clearLayout(mode, tab)}
+                      aria-label={t('admin:modes.editTabLayout', { tab: tabName(tab) })}
+                    />
+                  ))}
+                  <Button size="small" variant="outlined" startIcon={<DashboardCustomizeOutlined />} onClick={() => openEditor(mode, setUpTab)}>
+                    {t('admin:modes.setUpLayout')}
+                  </Button>
                 </Stack>
                 {Object.entries(stale).map(([tab, names]) => (
                   <Typography key={tab} variant="body2" sx={{ color: 'warning.main', mt: 0.5 }}>
@@ -235,7 +269,7 @@ const ModesSettings = () => {
                   </Typography>
                 ))}
               </Box>
-            </ButtonBase>
+            </Box>
           );
         })}
       </AdminGroup>
@@ -466,28 +500,6 @@ const ModeDialog = ({ mode, isNew, otherModes, tabs, tabName, saving, onCancel, 
             />
           </Stack>
 
-          <Box>
-            <Typography variant="subtitle2">{t('admin:modes.layouts')}</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>{t('admin:modes.layoutsHelp')}</Typography>
-            {Object.keys(draft.layouts).length === 0 && (
-              <Typography variant="body2" sx={{ fontStyle: 'italic' }}>{t('admin:modes.noLayouts')}</Typography>
-            )}
-            {Object.keys(draft.layouts).map((tab) => (
-              <Stack key={tab} direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', py: 0.5 }}>
-                <Typography>{tabName(tab)}</Typography>
-                <Button
-                  size="small"
-                  color="error"
-                  onClick={() => {
-                    const { [tab]: _cleared, ...rest } = draft.layouts;
-                    set({ layouts: rest });
-                  }}
-                >
-                  {t('admin:modes.clearLayout')}
-                </Button>
-              </Stack>
-            ))}
-          </Box>
         </Stack>
       </DialogContent>
       <DialogActions sx={{ justifyContent: 'space-between', px: 3, pb: 2 }}>
