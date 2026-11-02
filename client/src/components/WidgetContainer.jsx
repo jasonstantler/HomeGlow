@@ -49,6 +49,14 @@ const CORE_WIDGET_ID_TO_NAME = {
   'weather-widget': 'weather',
 };
 
+// Where the pointer is for a mouse or touch event, or null.
+const pointerPoint = (event) => {
+  const touch = event?.changedTouches?.[0] || event?.touches?.[0];
+  if (touch) return { x: touch.clientX, y: touch.clientY };
+  if (event && Number.isFinite(event.clientX)) return { x: event.clientX, y: event.clientY };
+  return null;
+};
+
 const resolveWidgetName = (widgetId) => {
   if (CORE_WIDGET_ID_TO_NAME[widgetId]) return CORE_WIDGET_ID_TO_NAME[widgetId];
   if (widgetId.startsWith('plugin-')) return `plugin:${widgetId.slice(7)}`;
@@ -119,6 +127,11 @@ const WidgetContainer = ({
   // How much the grid is scaled on screen (the mode layout editor shows it
   // smaller), so dragging follows the finger.
   scale = 1,
+  // Told where the pointer is while a widget is dragged, and where it was
+  // let go: (widgetName, clientX, clientY). app.jsx uses it to drop a widget
+  // on a tab in the dock.
+  onWidgetDrag,
+  onWidgetDragStop,
 }) => {
   const { t } = useTranslation('common');
   const API_DEVICE_URL = getDeviceApiBase(API_BASE_URL);
@@ -150,7 +163,12 @@ const WidgetContainer = ({
   const onSaveLayoutsRef = useRef(onSaveLayouts);
   onSaveLayoutsRef.current = onSaveLayouts;
 
+  const droppedAwayRef = useRef(false);
   const saveLayoutsToApi = useCallback((layoutItems, tabNumber, cols) => {
+    if (droppedAwayRef.current) {
+      droppedAwayRef.current = false;
+      return;
+    }
     // Every widget is saved, but against what it was loaded from: one nobody
     // moved keeps its stored 12-col values exactly instead of being re-rounded
     // through the live column count (see layoutToNormalized).
@@ -939,6 +957,19 @@ const WidgetContainer = ({
           resizeConfig={{ enabled: false }}
           compactor={GRID_COMPACTOR}
           positionStrategy={scaledStrategy}
+          onDrag={(_layout, _old, item, _placeholder, event) => {
+            const point = pointerPoint(event);
+            if (point && onWidgetDrag) onWidgetDrag(resolveWidgetName(item.i), point.x, point.y);
+          }}
+          onDragStop={(_layout, _old, item, _placeholder, event) => {
+            const point = pointerPoint(event);
+            // Dropped somewhere else (a tab in the dock): that drag's new
+            // position isn't saved, since the widget has left this tab.
+            if (point && onWidgetDragStop && onWidgetDragStop(resolveWidgetName(item.i), point.x, point.y) === true) {
+              droppedAwayRef.current = true;
+              if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+            }
+          }}
           onLayoutChange={handleLayoutChange}
         >
           {widgets.map((widget) => {
@@ -1035,6 +1066,7 @@ const WidgetContainer = ({
             return (
               <Box
                 key={widget.id}
+                data-widget-name={resolveWidgetName(widget.id) || undefined}
                 data-widget-id={widget.id}
                 className={`widget-wrapper ${isSelected ? 'selected' : ''} ${isExpanded ? 'expanded' : ''}`}
                 onClickCapture={(e) => handleExpandClickCapture(widget, e)}

@@ -87,15 +87,17 @@
     "editLayoutHelp": "Arrange this mode on a preview",
     "editor": {
       "title": "{{name}} layout",
-      "help": "Drag and resize widgets for this mode. Your normal dashboard isn't changed.",
-      "tab": "Tab",
+      "help": "Drag and resize widgets for this mode. Drop one on a tab below to move it there, or press and hold one for options. Your normal dashboard isn't changed.",
       "tabNumber": "Tab {{number}}",
       "widgets": "Widgets ({{count}})",
       "fromOtherTab": "From another tab",
       "cancel": "Cancel",
       "save": "Save",
       "saving": "Saving…",
-      "empty": "No widgets on this tab in this mode. Add some from Widgets."
+      "empty": "No widgets on this tab in this mode. Add some from Widgets.",
+      "hide": "Hide in this mode",
+      "moveTo": "Move to tab",
+      "tabs": "Tabs"
     }
   }
 }

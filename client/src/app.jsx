@@ -65,6 +65,10 @@ import useDisplayModes from './hooks/useDisplayModes.js';
 import ModeBadge from './components/ModeBadge.jsx';
 import {
   MODE_DIM_LEVEL,
+  firstOpenSpot,
+  hideInDraft,
+  showInDraft,
+  startDraft,
   MODE_LAYOUTS_SAVED_EVENT,
   OPEN_MODE_LAYOUT_EDITOR_EVENT,
   placeModeLayout,
@@ -1304,10 +1308,95 @@ const App = () => {
       const response = await axios.post(`${API_DEVICE_URL}/tabs`, tabData);
       await fetchTabs();
       setShowTabIconModal(false);
+      // A widget dropped on the dock's + goes into the new tab.
+      const pending = pendingTabMoveRef.current;
+      pendingTabMoveRef.current = null;
+      const newTab = Number(response.data?.number);
+      if (pending && Number.isInteger(newTab)) await moveWidgetToTab(pending.name, pending.fromTab, newTab);
     } catch (error) {
       console.error('Error creating tab:', error);
       alert('Failed to create tab. Please try again.');
     }
+  };
+
+  // ---- Dropping a dragged widget on the dock (Move/Resize) ----
+  // Over a tab: the widget moves to that tab. Over +: a new tab is made (the
+  // usual new-tab dialog) and the widget moves into it.
+  const [dockDropTarget, setDockDropTarget] = useState(null);
+  const pendingTabMoveRef = useRef(null);
+
+  const dockTargetAt = (x, y) => {
+    const inside = (el) => {
+      const r = el.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    };
+    const tabEl = [...document.querySelectorAll('[data-dock-tab]')].find(inside);
+    if (tabEl) return Number(tabEl.getAttribute('data-dock-tab'));
+    const addEl = document.querySelector('[data-dock-add]');
+    if (addEl && inside(addEl)) return 'add';
+    return null;
+  };
+
+  const moveWidgetToTab = async (name, fromTab, toTab) => {
+    if (!name || fromTab === toTab) return;
+    // A mode with its own layout here: the move is the mode's, so the usual
+    // tabs stay as they are.
+    if (shownMode?.layouts?.[fromTab]) {
+      const here = startDraft(shownMode, fromTab, tabWidgetsFor(fromTab));
+      const item = here.saved[name];
+      const there = startDraft(shownMode, toTab, tabWidgetsFor(toTab));
+      try {
+        await displayModes.saveModeTabs(shownMode.id, {
+          [fromTab]: hideInDraft(here, name, isWidgetAssignedToTab(name, fromTab)),
+          [toTab]: showInDraft(there, name, item ? { w: item.w, h: item.h } : widgetSizeOf(name)),
+        });
+        setActiveTab(toTab);
+      } catch (error) {
+        console.error('Error moving the widget in this mode:', error);
+      }
+      return;
+    }
+    try {
+      if (!isWidgetAssignedToTab(name, toTab)) {
+        await axios.post(`${API_DEVICE_URL}/widget-assignments`, { widget_name: name, tabNumber: toTab });
+      }
+      // Its size comes along, in the first open spot on the new tab.
+      const size = getWidgetLayoutForTab(name, fromTab) || { w: 6, h: 4 };
+      const taken = Object.keys(widgetAssignments)
+        .filter((other) => other !== name)
+        .map((other) => getWidgetLayoutForTab(other, toTab))
+        .filter(Boolean);
+      const spot = firstOpenSpot({ w: size.w, h: size.h }, taken);
+      await axios.patch(`${API_DEVICE_URL}/widget-assignments/layout/bulk`, {
+        layouts: [{ widget_name: name, tabNumber: toTab, layout_x: spot.x, layout_y: spot.y, layout_w: spot.w, layout_h: spot.h }],
+      });
+      await axios.delete(`${API_DEVICE_URL}/widget-assignments/${encodeURIComponent(`${fromTab}::${name}`)}`);
+      await fetchWidgetAssignments();
+      setActiveTab(toTab);
+    } catch (error) {
+      console.error('Error moving the widget to another tab:', error);
+      await fetchWidgetAssignments();
+    }
+  };
+
+  const handleWidgetDrag = (name, x, y) => {
+    const target = dockTargetAt(x, y);
+    setDockDropTarget((current) => (current === target ? current : target));
+  };
+
+  const handleWidgetDragStop = (name, x, y) => {
+    const target = dockTargetAt(x, y);
+    setDockDropTarget(null);
+    if (target === 'add') {
+      pendingTabMoveRef.current = { name, fromTab: activeTab };
+      setShowTabIconModal(true);
+      return false;
+    }
+    if (Number.isInteger(target) && target !== activeTab) {
+      void moveWidgetToTab(name, activeTab, target);
+      return true;
+    }
+    return false;
   };
 
   const handleDeleteTab = async (tabNumber) => {
@@ -1741,6 +1830,8 @@ const App = () => {
             expandSettings={screensaverSettings}
             onExpandedSizeChange={setExpandedWidgetSize}
             onSaveLayouts={saveLayoutsToMode}
+            onWidgetDrag={handleWidgetDrag}
+            onWidgetDragStop={handleWidgetDragStop}
           />
         )}
         {shouldRunWeatherBackgroundPrefetch && (
@@ -1828,6 +1919,7 @@ const App = () => {
           covers the bottom action buttons of the panel's dialogs. */}
       {!(isMobile && showAdminPanel) && (
       <TabBar
+        dropTarget={dockDropTarget}
         tabs={tabs}
         activeTab={activeTab}
         onTabChange={handleTabChange}
@@ -1839,7 +1931,8 @@ const App = () => {
         onOpenSettings={toggleAdminPanel}
         onRefresh={handlePageRefresh}
         // A widget filling the whole page covers the dock too.
-        hidden={dockHidden || expandedWidgetSize === 'full'}
+        // The mode layout editor has its own dock.
+        hidden={dockHidden || expandedWidgetSize === 'full' || Boolean(layoutEditor)}
         underDialogs={showAdminPanel}
         theme={displayTheme}
         themeMode={themeMode}
@@ -1860,7 +1953,10 @@ const App = () => {
       <Suspense fallback={null}>
         <TabIconModal
           open={showTabIconModal}
-          onClose={() => setShowTabIconModal(false)}
+          onClose={() => {
+            pendingTabMoveRef.current = null;
+            setShowTabIconModal(false);
+          }}
           onSave={handleSaveTab}
         />
       </Suspense>

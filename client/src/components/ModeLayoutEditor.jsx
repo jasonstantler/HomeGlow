@@ -4,15 +4,17 @@ import {
   Button,
   Checkbox,
   Dialog,
+  Divider,
+  ListSubheader,
   ListItemIcon,
   ListItemText,
   Menu,
   MenuItem,
-  TextField,
   Typography,
 } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import WidgetContainer from './WidgetContainer.jsx';
+import { TabIcon } from './TabBar.jsx';
 import {
   hideInDraft,
   showInDraft,
@@ -23,6 +25,9 @@ import { readGridMetrics } from '../utils/gridMetrics.js';
 
 // How big the preview is next to the real wall.
 const PREVIEW_SCALE = 0.85;
+// Holding a widget this long, without moving, opens its options.
+const LONG_PRESS_MS = 550;
+const LONG_PRESS_SLOP_PX = 10;
 // The grid saves a moved widget after this long (WidgetContainer); Save waits
 // a little longer so the last move is in.
 const SETTLE_MS = 650;
@@ -48,6 +53,12 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
   const [drafts, setDrafts] = useState({});
   const [menuAnchor, setMenuAnchor] = useState(null);
   const [saving, setSaving] = useState(false);
+  // The long-press menu: { name, x, y } of the widget held.
+  const [widgetMenu, setWidgetMenu] = useState(null);
+  const pressRef = useRef(null);
+  // The preview's full height, so a tall tab scrolls in the editor.
+  const contentRef = useRef(null);
+  const [contentHeight, setContentHeight] = useState(window.innerHeight);
   const draftsRef = useRef(drafts);
   draftsRef.current = drafts;
 
@@ -70,7 +81,10 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
     setDrafts((prev) => {
       const current = prev[tabNumber] || startDraft(mode, tabNumber, tabWidgets(tabNumber));
       const saved = { ...current.saved };
+      // Only widgets still on this tab: one just moved to another tab (or
+      // hidden) may still be in the grid's last save.
       layoutRows.forEach((row) => {
+        if (!saved[row.widget_name]) return;
         saved[row.widget_name] = { x: row.layout_x, y: row.layout_y, w: row.layout_w, h: row.layout_h };
       });
       return { ...prev, [tabNumber]: { ...current, saved } };
@@ -80,6 +94,87 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
   const toggle = (name) => {
     if (draft.saved[name]) setDraft(hideInDraft(draft, name, onTabNames.has(name)));
     else setDraft(showInDraft(draft, name, sizeOf(name), rows));
+  };
+
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => setContentHeight(Math.max(viewport.height, el.scrollHeight)));
+    observer.observe(el);
+    const grid = el.firstElementChild;
+    if (grid) observer.observe(grid);
+    return () => observer.disconnect();
+  }, [viewport.height, tab, grid.length]);
+
+  // ---- Long press on a widget: its options ----
+  const cancelPress = () => {
+    if (pressRef.current) clearTimeout(pressRef.current.timer);
+    pressRef.current = null;
+  };
+  const onPressStart = (event) => {
+    const el = event.target?.closest?.('[data-widget-name]');
+    if (!el) return;
+    const name = el.getAttribute('data-widget-name');
+    const start = { x: event.clientX, y: event.clientY };
+    cancelPress();
+    pressRef.current = {
+      start,
+      timer: setTimeout(() => {
+        pressRef.current = null;
+        setWidgetMenu({ name, x: start.x, y: start.y });
+      }, LONG_PRESS_MS),
+    };
+  };
+  const onPressMove = (event) => {
+    const press = pressRef.current;
+    if (!press) return;
+    if (Math.hypot(event.clientX - press.start.x, event.clientY - press.start.y) > LONG_PRESS_SLOP_PX) cancelPress();
+  };
+  useEffect(() => cancelPress, []);
+
+  const moveToTab = (name, target) => {
+    const size = draft.saved[name] ? { w: draft.saved[name].w, h: draft.saved[name].h } : sizeOf(name);
+    setDrafts((prev) => {
+      const here = prev[tab] || startDraft(mode, tab, tabWidgets(tab));
+      const there = prev[target] || startDraft(mode, target, tabWidgets(target));
+      return {
+        ...prev,
+        [tab]: hideInDraft(here, name, onTabNames.has(name)),
+        [target]: showInDraft(there, name, size, rows),
+      };
+    });
+  };
+
+  // ---- The dock: tap a tab to edit it, or drop a dragged widget on it ----
+  const [dropTab, setDropTab] = useState(null);
+  const editorTabAt = (x, y) => {
+    const el = [...document.querySelectorAll('[data-editor-tab]')].find((item) => {
+      const r = item.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    });
+    return el ? Number(el.getAttribute('data-editor-tab')) : null;
+  };
+  const onWidgetDrag = (name, x, y) => {
+    const target = editorTabAt(x, y);
+    setDropTab((current) => (current === target ? current : target));
+  };
+  const onWidgetDragStop = (name, x, y) => {
+    const target = editorTabAt(x, y);
+    setDropTab(null);
+    if (target != null && target !== tab && name) {
+      moveToTab(name, target);
+      setTab(target);
+      return true;
+    }
+    return false;
+  };
+
+  const menuWidget = widgetMenu && widgets.find((widget) => widget.name === widgetMenu.name);
+  const closeWidgetMenu = () => setWidgetMenu(null);
+  const pick = (fn) => () => {
+    const { name } = widgetMenu;
+    closeWidgetMenu();
+    fn(name);
   };
 
   const save = async () => {
@@ -123,21 +218,6 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
           <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>{t('modes.editor.title', { name: mode.name })}</Typography>
           <Typography variant="body2" sx={{ color: 'var(--text-secondary)' }}>{t('modes.editor.help')}</Typography>
         </Box>
-        <TextField
-          select
-          size="small"
-          label={t('modes.editor.tab')}
-          value={tab}
-          onChange={(e) => setTab(Number(e.target.value))}
-          sx={{ minWidth: 160 }}
-        >
-          {tabs.map((item) => (
-            <MenuItem key={item.number} value={item.number}>
-              {item.label || t('modes.editor.tabNumber', { number: item.number })}
-              {drafts[item.number] || mode.layouts?.[item.number] ? ' •' : ''}
-            </MenuItem>
-          ))}
-        </TextField>
         <Button variant="outlined" onClick={(e) => setMenuAnchor(e.currentTarget)} aria-haspopup="menu">
           {t('modes.editor.widgets', { count: shown })}
         </Button>
@@ -160,11 +240,16 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
         </Menu>
       </Box>
 
-      <Box sx={{ flex: 1, overflow: 'auto', py: 3, display: 'flex', justifyContent: 'center' }}>
+      <Box sx={{ flex: 1, overflow: 'auto', pt: 3, pb: 12, display: 'flex', justifyContent: 'center', alignItems: 'flex-start' }}>
         <Box
+          onPointerDownCapture={onPressStart}
+          onPointerMoveCapture={onPressMove}
+          onPointerUpCapture={cancelPress}
+          onPointerCancelCapture={cancelPress}
+          onContextMenu={(e) => e.preventDefault()}
           sx={{
             width: viewport.width * PREVIEW_SCALE,
-            height: viewport.height * PREVIEW_SCALE,
+            height: contentHeight * PREVIEW_SCALE,
             flex: 'none',
             position: 'relative',
             overflow: 'hidden',
@@ -175,12 +260,15 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
           }}
         >
           <Box
+            ref={contentRef}
             sx={{
               width: viewport.width,
-              height: viewport.height,
+              minHeight: viewport.height,
               transform: `scale(${PREVIEW_SCALE})`,
               transformOrigin: 'top left',
-              overflow: 'hidden',
+              // The dashboard keeps this much clear above the dock.
+              pb: '80px',
+              boxSizing: 'border-box',
             }}
           >
             {grid.length > 0 ? (
@@ -192,6 +280,8 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
                 activeTabId={tabs.find((item) => item.number === tab)?.id ?? tab}
                 scale={PREVIEW_SCALE}
                 onSaveLayouts={saveFromGrid}
+                onWidgetDrag={onWidgetDrag}
+                onWidgetDragStop={onWidgetDragStop}
               />
             ) : (
               <Typography sx={{ p: 6, textAlign: 'center', color: 'var(--text-secondary)' }}>
@@ -201,6 +291,93 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
           </Box>
         </Box>
       </Box>
+      <Box
+        role="tablist"
+        aria-label={t('modes.editor.tabs')}
+        sx={{
+          position: 'fixed',
+          bottom: 16,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 2,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.5,
+          px: 2,
+          py: 1,
+          borderRadius: 'var(--hg-radius-2xl)',
+          backgroundColor: 'var(--dock-bg)',
+          border: '1px solid var(--dock-border)',
+          backdropFilter: 'blur(20px)',
+          boxShadow: '0 8px 32px var(--hg-black-30), 0 2px 8px var(--hg-black-20)',
+        }}
+      >
+        {tabs.map((item) => {
+          const active = item.number === tab;
+          const dropping = dropTab === item.number && !active;
+          const hasLayout = Boolean(drafts[item.number] || mode.layouts?.[item.number]);
+          return (
+            <Box
+              key={item.number}
+              component="button"
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-label={item.label || t('modes.editor.tabNumber', { number: item.number })}
+              data-editor-tab={item.number}
+              onClick={() => setTab(item.number)}
+              sx={{
+                width: 44,
+                height: 44,
+                p: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                position: 'relative',
+                cursor: 'pointer',
+                borderRadius: 'var(--hg-radius-lg)',
+                transition: 'all 0.2s ease',
+                backgroundColor: active ? 'var(--dock-active-bg)' : 'transparent',
+                backgroundImage: active ? 'var(--dock-active-image)' : 'none',
+                border: active ? '1.5px solid var(--dock-active-border)' : '1.5px solid transparent',
+                ...(dropping && {
+                  transform: 'scale(1.15)',
+                  border: '1.5px solid var(--accent)',
+                  backgroundColor: 'rgba(var(--accent-rgb), 0.18)',
+                }),
+              }}
+            >
+              <TabIcon name={item.icon} size={22} color={active ? 'var(--dock-active-icon)' : 'var(--dock-icon)'} />
+              {hasLayout && (
+                <Box
+                  aria-hidden="true"
+                  sx={{ position: 'absolute', top: 3, right: 3, width: 7, height: 7, borderRadius: '50%', backgroundColor: mode.color }}
+                />
+              )}
+            </Box>
+          );
+        })}
+      </Box>
+
+      <Menu
+        open={Boolean(widgetMenu && menuWidget)}
+        onClose={closeWidgetMenu}
+        anchorReference="anchorPosition"
+        anchorPosition={widgetMenu ? { top: widgetMenu.y, left: widgetMenu.x } : undefined}
+        slotProps={{ paper: { sx: { minWidth: 240 } } }}
+      >
+        {menuWidget && <ListSubheader sx={{ fontWeight: 700, lineHeight: '36px' }}>{labelOf(menuWidget)}</ListSubheader>}
+        <MenuItem onClick={pick((name) => setDraft(hideInDraft(draft, name, onTabNames.has(name))))}>
+          <ListItemText inset primary={t('modes.editor.hide')} />
+        </MenuItem>
+        {tabs.length > 1 && <Divider />}
+        {tabs.length > 1 && <ListSubheader sx={{ lineHeight: '28px' }}>{t('modes.editor.moveTo')}</ListSubheader>}
+        {tabs.filter((item) => item.number !== tab).map((item) => (
+          <MenuItem key={item.number} onClick={pick((name) => moveToTab(name, item.number))}>
+            <ListItemText inset primary={item.label || t('modes.editor.tabNumber', { number: item.number })} />
+          </MenuItem>
+        ))}
+      </Menu>
     </Dialog>
   );
 };

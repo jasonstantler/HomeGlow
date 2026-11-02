@@ -87,15 +87,17 @@
     "editLayoutHelp": "Organiza este modo en una vista previa",
     "editor": {
       "title": "Diseño de {{name}}",
-      "help": "Arrastra y cambia el tamaño de los widgets para este modo. Tu panel normal no cambia.",
-      "tab": "Pestaña",
+      "help": "Arrastra y cambia el tamaño de los widgets para este modo. Suelta uno en una pestaña de abajo para moverlo allí, o mantén pulsado uno para ver opciones. Tu panel normal no cambia.",
       "tabNumber": "Pestaña {{number}}",
       "widgets": "Widgets ({{count}})",
       "fromOtherTab": "De otra pestaña",
       "cancel": "Cancelar",
       "save": "Guardar",
       "saving": "Guardando…",
-      "empty": "No hay widgets en esta pestaña en este modo. Añade algunos desde Widgets."
+      "empty": "No hay widgets en esta pestaña en este modo. Añade algunos desde Widgets.",
+      "hide": "Ocultar en este modo",
+      "moveTo": "Mover a la pestaña",
+      "tabs": "Pestañas"
     }
   }
 }
