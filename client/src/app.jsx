@@ -17,6 +17,17 @@ import { refreshSubscription } from './utils/pushNotifications.js';
 import { unlockAudio } from './utils/choreSound.js';
 import useChoreSoundScheduler from './hooks/useChoreSoundScheduler.js';
 import useFetchTabs from './hooks/useFetchTabs.js';
+import useCrossTabDrag from './hooks/useCrossTabDrag.js';
+import CrossTabDragOverlay from './components/CrossTabDragOverlay.jsx';
+import WidgetRemoveUndo from './components/WidgetRemoveUndo.jsx';
+import i18n from './i18n/index.js';
+import {
+  tabChoicesFor,
+  tabEntryFor,
+  tabHasWidget,
+  widgetNameFromId,
+} from './utils/widgetTabMove.js';
+import { adminLocationForWidget, revealWidgetSettings } from './utils/revealTabPicker.js';
 import useIsMobile from './hooks/useIsMobile.js';
 import useScreenActivity from './hooks/useScreenActivity.js';
 import {
@@ -82,7 +93,7 @@ import CelebrationHost from './components/CelebrationHost.jsx';
 import { normalizeWidgetSettings, BASE_WIDGET_SETTINGS } from './utils/widgetSettings.js';
 import { buildMobileWidgetList } from './utils/mobileWidgets.js';
 import { CORE_CONTROLS, resolveHiddenControls } from './utils/displayControls.js';
-import { parseAdminHash, clearAdminHash } from './utils/adminNavigation.js';
+import { parseAdminHash, clearAdminHash, setAdminHash } from './utils/adminNavigation.js';
 import './index.css';
 
 const loadAdminPanel = () => import('./components/AdminPanel.jsx');
@@ -1304,6 +1315,12 @@ const App = () => {
       const response = await axios.post(`${API_DEVICE_URL}/tabs`, tabData);
       await fetchTabs();
       setShowTabIconModal(false);
+      // "New tab" from a widget's menu: the widget goes there next.
+      const pending = pendingNewTabRef.current;
+      pendingNewTabRef.current = null;
+      if (pending && Number.isFinite(response?.data?.number)) {
+        await sendWidgetToTab({ ...pending, toTab: response.data.number, copy: pending.mode === 'duplicate' });
+      }
     } catch (error) {
       console.error('Error creating tab:', error);
       alert('Failed to create tab. Please try again.');
@@ -1341,6 +1358,193 @@ const App = () => {
     const match = assignments.find(a => a.tabNumber === tabNumber);
     if (!match || match.layout_x == null) return null;
     return { x: match.layout_x, y: match.layout_y, w: match.layout_w, h: match.layout_h };
+  };
+
+  // --- Moving widgets between tabs, and the long-press menu (Move/Resize) ---
+  // A widget on its way to a tab: { token, widgetId, tab, size, dropAt }.
+  const [widgetArrival, setWidgetArrival] = useState(null);
+  const arrivalTokenRef = useRef(0);
+  // The Remove confirmation: { widgetName, tab, title, tabLabel, lastTab, place }.
+  const [removeRequest, setRemoveRequest] = useState(null);
+  // The message at the top after a remove (with Undo) or a refused move.
+  const [widgetNotice, setWidgetNotice] = useState(null);
+  // A widget waiting for the tab being made for it from its menu.
+  const pendingNewTabRef = useRef(null);
+
+  const tabLabelFor = (tabNumber) => tabs.find((tab) => tab.number === tabNumber)?.label || `Tab ${tabNumber}`;
+
+  const widgetTitleFor = (widgetId) => {
+    const name = widgetNameFromId(widgetId);
+    if (!name) return '';
+    if (name.startsWith('plugin:')) {
+      const filename = name.slice(7);
+      return installedPlugins.find((plugin) => plugin.filename === filename)?.name || filename;
+    }
+    return i18n.t(`common:widgetMenu.names.${name}`, { defaultValue: name });
+  };
+
+  // Move a widget to a tab (or also show it there: copy), then go to that tab
+  // and place it: under the finger when it was dropped there, otherwise in the
+  // first open spot. The same tab just places it again.
+  const sendWidgetToTab = async ({ widgetId, widgetName, fromTab, toTab, size, copy = false, dropAt = null }) => {
+    if (fromTab !== toTab) {
+      if (tabHasWidget(tabsRef.current, toTab, widgetName)) {
+        setWidgetNotice({ message: i18n.t('common:widgetMenu.alreadyOn', { tab: tabLabelFor(toTab) }) });
+        return false;
+      }
+      try {
+        await axios.post(`${API_DEVICE_URL}/widget-assignments/transfer`, {
+          widget_name: widgetName,
+          fromTab,
+          toTab,
+          copy,
+        });
+      } catch (error) {
+        console.error('Error moving widget:', error);
+        setWidgetNotice({ message: i18n.t('common:widgetMenu.moveFailed') });
+        return false;
+      }
+      await Promise.all([fetchTabs(), fetchWidgetAssignments()]);
+    }
+    arrivalTokenRef.current += 1;
+    setWidgetArrival({ token: arrivalTokenRef.current, widgetId, tab: toTab, size, dropAt });
+    setActiveTab(toTab);
+    return true;
+  };
+
+  // Placed: read the layout back once its save lands, so the dashboard and
+  // the server agree on where it is.
+  const handleArrivalDone = useCallback((token, saved) => {
+    setWidgetArrival((current) => (current?.token === token ? null : current));
+    void Promise.resolve(saved).then(() => fetchWidgetAssignments());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Never leave a widget hidden waiting for an arrival that can't happen.
+  useEffect(() => {
+    if (!widgetArrival) return undefined;
+    const token = widgetArrival.token;
+    const timer = setTimeout(() => {
+      setWidgetArrival((current) => (current?.token === token ? null : current));
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [widgetArrival]);
+
+  const crossTabDrag = useCrossTabDrag({
+    enabled: !widgetsLocked && !isMobile && !showAdminPanel,
+    tabs,
+    activeTab,
+    setActiveTab,
+    onDrop: ({ widgetId, widgetName, fromTab, toTab, size, dropAt }) => (
+      sendWidgetToTab({ widgetId, widgetName, fromTab, toTab, size, dropAt })
+    ),
+  });
+  const carriedName = crossTabDrag.carry?.widgetName;
+  const carryBlocked = Boolean(carriedName)
+    && activeTab !== crossTabDrag.carry.fromTab
+    && tabHasWidget(tabs, activeTab, carriedName);
+  const edgeTabLabel = crossTabDrag.edge
+    ? tabLabelFor(swipeTargetTab(tabs, activeTab, crossTabDrag.edge))
+    : '';
+
+  // Remove from this tab. The widget stays installed; if this was the last tab
+  // it was on, it's also turned off, which is how Settings shows a widget
+  // that's on no tab (turning it on there asks for a tab again).
+  const setWidgetEnabled = async (widgetName, enabled) => {
+    const isPlugin = widgetName.startsWith('plugin:');
+    const key = isPlugin ? widgetName.slice(7) : widgetName;
+    const field = isPlugin ? 'pluginSettings' : 'widgetSettings';
+    const current = rawDeviceSettings?.[field] && typeof rawDeviceSettings[field] === 'object'
+      ? rawDeviceSettings[field]
+      : (isPlugin ? pluginSettings : widgetSettings);
+    const response = await axios.patch(`${API_DEVICE_URL}/settings`, {
+      [field]: { ...current, [key]: { ...(current[key] || {}), enabled } },
+    });
+    hydrateFromDeviceSettings(response.data || {});
+  };
+
+  const confirmRemoveWidget = async () => {
+    const request = removeRequest;
+    setRemoveRequest(null);
+    if (!request) return;
+    const entry = {
+      ...(tabEntryFor(tabsRef.current, request.tab, request.widgetName) || {}),
+      ...(request.place ? {
+        layout_x: request.place.x,
+        layout_y: request.place.y,
+        layout_w: request.place.w,
+        layout_h: request.place.h,
+      } : {}),
+    };
+    try {
+      await axios.delete(`${API_DEVICE_URL}/widget-assignments/${encodeURIComponent(`${request.tab}::${request.widgetName}`)}`);
+      if (request.lastTab) await setWidgetEnabled(request.widgetName, false);
+      await Promise.all([fetchTabs(), fetchWidgetAssignments()]);
+      setWidgetNotice({
+        message: i18n.t('common:widgetMenu.removed', { name: request.title, tab: request.tabLabel }),
+        undo: { widgetName: request.widgetName, tab: request.tab, entry, reenable: request.lastTab },
+      });
+    } catch (error) {
+      console.error('Error removing widget:', error);
+      setWidgetNotice({ message: i18n.t('common:widgetMenu.removeFailed') });
+    }
+  };
+
+  const undoRemoveWidget = async () => {
+    const undo = widgetNotice?.undo;
+    setWidgetNotice(null);
+    if (!undo) return;
+    try {
+      await axios.put(`${API_DEVICE_URL}/widget-assignments/entry`, {
+        widget_name: undo.widgetName,
+        tabNumber: undo.tab,
+        entry: undo.entry,
+      });
+      if (undo.reenable) await setWidgetEnabled(undo.widgetName, true);
+      await Promise.all([fetchTabs(), fetchWidgetAssignments()]);
+      setActiveTab(undo.tab);
+    } catch (error) {
+      console.error('Error restoring widget:', error);
+      setWidgetNotice({ message: i18n.t('common:widgetMenu.undoFailed') });
+    }
+  };
+
+  // "Widget settings": Admin opened on the right page, then scrolled to the
+  // widget once it's there (after the PIN, if one is asked for).
+  const revealTimerRef = useRef(null);
+  const openWidgetSettings = (widgetName) => {
+    if (!widgetName) return;
+    setAdminHash(adminLocationForWidget(widgetName));
+    setShowAdminPanel(true);
+    clearInterval(revealTimerRef.current);
+    const started = Date.now();
+    revealTimerRef.current = setInterval(() => {
+      if (revealWidgetSettings(widgetName) || Date.now() - started > 60000) {
+        clearInterval(revealTimerRef.current);
+      }
+    }, 250);
+  };
+  useEffect(() => {
+    if (!showAdminPanel) clearInterval(revealTimerRef.current);
+  }, [showAdminPanel]);
+  useEffect(() => () => clearInterval(revealTimerRef.current), []);
+
+  const widgetMenu = {
+    titleFor: widgetTitleFor,
+    tabChoices: (widgetName) => tabChoicesFor(tabs, widgetName, activeTab),
+    onMoveToTab: (request) => sendWidgetToTab(request),
+    onDuplicateToTab: (request) => sendWidgetToTab({ ...request, copy: true }),
+    onNewTab: (request) => {
+      pendingNewTabRef.current = request;
+      setShowTabIconModal(true);
+    },
+    onOpenSettings: openWidgetSettings,
+    onRemove: (request) => setRemoveRequest({
+      ...request,
+      tab: request.fromTab,
+      tabLabel: tabLabelFor(request.fromTab),
+      lastTab: (widgetAssignments[request.widgetName] || []).length <= 1,
+    }),
   };
 
   // Every control id this dashboard can name: the core catalog plus whatever the
@@ -1741,6 +1945,10 @@ const App = () => {
             expandSettings={screensaverSettings}
             onExpandedSizeChange={setExpandedWidgetSize}
             onSaveLayouts={saveLayoutsToMode}
+            crossTab={crossTabDrag}
+            arrival={widgetArrival}
+            onArrivalDone={handleArrivalDone}
+            widgetMenu={widgetMenu}
           />
         )}
         {shouldRunWeatherBackgroundPrefetch && (
@@ -1839,7 +2047,9 @@ const App = () => {
         onOpenSettings={toggleAdminPanel}
         onRefresh={handlePageRefresh}
         // A widget filling the whole page covers the dock too.
-        hidden={dockHidden || expandedWidgetSize === 'full'}
+        // Kept in view while a widget is dragged toward it.
+        hidden={(dockHidden && !crossTabDrag.carry) || expandedWidgetSize === 'full'}
+        dragOverTab={crossTabDrag.hoverTab}
         underDialogs={showAdminPanel}
         theme={displayTheme}
         themeMode={themeMode}
@@ -1860,10 +2070,31 @@ const App = () => {
       <Suspense fallback={null}>
         <TabIconModal
           open={showTabIconModal}
-          onClose={() => setShowTabIconModal(false)}
+          onClose={() => {
+            pendingNewTabRef.current = null;
+            setShowTabIconModal(false);
+          }}
           onSave={handleSaveTab}
         />
       </Suspense>
+
+      <CrossTabDragOverlay
+        edge={crossTabDrag.edge}
+        edgeTabLabel={edgeTabLabel}
+        carry={crossTabDrag.carry}
+        pointer={crossTabDrag.pointer}
+        ghostRef={crossTabDrag.ghostRef}
+        alreadyOnTab={carryBlocked}
+      />
+
+      <WidgetRemoveUndo
+        confirm={removeRequest}
+        onConfirm={confirmRemoveWidget}
+        onCancel={() => setRemoveRequest(null)}
+        undo={widgetNotice ? { message: widgetNotice.message, canUndo: Boolean(widgetNotice.undo) } : null}
+        onUndo={undoRemoveWidget}
+        onUndoClose={() => setWidgetNotice(null)}
+      />
 
       <CelebrationHost
         enabled={householdSettings.CHORE_CELEBRATION_ENABLED !== 'false' && householdSettings.CHORE_CELEBRATION_ENABLED !== false}

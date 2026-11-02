@@ -12,9 +12,18 @@ import { getDeviceApiBase } from '../utils/deviceName.js';
 import {
   clampLayoutItem,
   layoutItemFromNormalized,
+  layoutItemToNormalized,
   layoutToNormalized,
   scaleLayoutItem,
 } from '../utils/gridLayout.js';
+import {
+  applySizePreset,
+  cellAtPoint,
+  placeArrival,
+  visibleRows,
+  widgetNameFromId,
+} from '../utils/widgetTabMove.js';
+import WidgetLongPressMenu from './WidgetLongPressMenu.jsx';
 import CountdownCircle from './CountdownCircle';
 import { canCommitResize } from '../utils/resizeGuard';
 import { shouldAcceptLayoutChange } from '../utils/layoutSync';
@@ -42,16 +51,20 @@ import {
 // No auto-compaction; block overlaps (same as compactType={null} + preventCollision).
 const GRID_COMPACTOR = getCompactor(null, false, true);
 
-const CORE_WIDGET_ID_TO_NAME = {
-  'calendar-widget': 'calendar',
-  'chores-widget': 'chores',
-  'photos-widget': 'photos',
-  'weather-widget': 'weather',
-};
+const resolveWidgetName = widgetNameFromId;
 
-const resolveWidgetName = (widgetId) => {
-  if (CORE_WIDGET_ID_TO_NAME[widgetId]) return CORE_WIDGET_ID_TO_NAME[widgetId];
-  if (widgetId.startsWith('plugin-')) return `plugin:${widgetId.slice(7)}`;
+// Long press in Move/Resize mode opens the widget's menu: held this long,
+// moving no further than this. Once it is open, moving further than the
+// second distance means a drag after all, and the menu gets out of the way.
+const LONG_PRESS_MS = 550;
+const LONG_PRESS_SLOP = 10;
+const MENU_DRAG_AWAY = 18;
+
+// Where a pointer or touch event is on screen.
+const eventPoint = (event) => {
+  const touch = event?.touches?.[0] || event?.changedTouches?.[0];
+  if (touch) return { x: touch.clientX, y: touch.clientY };
+  if (event && Number.isFinite(event.clientX)) return { x: event.clientX, y: event.clientY };
   return null;
 };
 
@@ -119,6 +132,18 @@ const WidgetContainer = ({
   // How much the grid is scaled on screen (the mode layout editor shows it
   // smaller), so dragging follows the finger.
   scale = 1,
+  // Dragging a widget to another tab (hooks/useCrossTabDrag.js): told when a
+  // drag starts and ends, and which widget is being carried, to hide it here.
+  crossTab = null,
+  // A widget that just came to this tab: { token, widgetId, tab, size, dropAt }.
+  // Placed under the finger (dropAt) or in the first open spot, then
+  // selected. onArrivalDone(token) once it is.
+  arrival = null,
+  onArrivalDone,
+  // The long-press menu's actions that reach past this tab (app.jsx):
+  // tabChoices(widgetName), onMoveToTab, onDuplicateToTab, onNewTab,
+  // onOpenSettings, onRemove, titleFor(widgetId).
+  widgetMenu = null,
 }) => {
   const { t } = useTranslation('common');
   const API_DEVICE_URL = getDeviceApiBase(API_BASE_URL);
@@ -141,6 +166,9 @@ const WidgetContainer = ({
   // rebuild lands. Guards against saving a layout mid tab change — see
   // shouldAcceptLayoutChange.
   const layoutTabRef = useRef(null);
+  // The same, as state: committed together with the layout it describes, so
+  // an effect reading both sees one tab's layout, never the last tab's.
+  const [layoutForTab, setLayoutForTab] = useState(null);
   const resizeTapGuardRef = useRef(new Map());
   // The widgets of the latest render, whose savedLayout describes the active
   // tab. Read when a save is requested, not when the debounced save fires.
@@ -150,15 +178,19 @@ const WidgetContainer = ({
   const onSaveLayoutsRef = useRef(onSaveLayouts);
   onSaveLayoutsRef.current = onSaveLayouts;
 
-  const saveLayoutsToApi = useCallback((layoutItems, tabNumber, cols) => {
+  // A save waiting out its debounce: { tab, send }.
+  const pendingSaveRef = useRef(null);
+
+  // immediate: send now and return the request, for a caller that has to
+  // read the saved layout back (a widget arriving from another tab).
+  const saveLayoutsToApi = useCallback((layoutItems, tabNumber, cols, { immediate = false } = {}) => {
     // Every widget is saved, but against what it was loaded from: one nobody
     // moved keeps its stored 12-col values exactly instead of being re-rounded
     // through the live column count (see layoutToNormalized).
     const savedSources = savedSourcesById(widgetsRef.current);
     // Where to save is decided now, with the layout, not when the timer fires.
     const saveElsewhere = onSaveLayoutsRef.current;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
+    const send = () => {
       // Persist in normalized (12-col) units so layouts round-trip across breakpoints.
       const layouts = layoutToNormalized(layoutItems, cols, savedSources)
         .filter(stored => resolveWidgetName(stored.i))
@@ -171,13 +203,31 @@ const WidgetContainer = ({
           layout_h: stored.h,
         }));
 
-      if (layouts.length === 0) return;
-      if (saveElsewhere) {
-        saveElsewhere(layouts, tabNumber);
-        return;
-      }
-      axios.patch(`${API_DEVICE_URL}/widget-assignments/layout/bulk`, { layouts }).catch(() => { });
+      if (layouts.length === 0) return Promise.resolve();
+      if (saveElsewhere) return Promise.resolve(saveElsewhere(layouts, tabNumber));
+      return axios.patch(`${API_DEVICE_URL}/widget-assignments/layout/bulk`, { layouts }).catch(() => { });
+    };
+
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+      // A save still waiting for another tab goes out now instead of being
+      // replaced: widgets move between tabs now, so two tabs can change
+      // within the same half second.
+      const pending = pendingSaveRef.current;
+      if (pending && pending.tab !== tabNumber) void pending.send();
+    }
+    pendingSaveRef.current = null;
+
+    if (immediate) return send();
+
+    pendingSaveRef.current = { tab: tabNumber, send };
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      pendingSaveRef.current = null;
+      void send();
     }, 500);
+    return null;
   }, []);
 
   // Update container width and grid columns based on screen size
@@ -233,6 +283,7 @@ const WidgetContainer = ({
       const initialLayout = buildLayout(widgets, gridCols, lockedRef.current);
       setLayout(initialLayout);
       layoutTabRef.current = activeTab;
+      setLayoutForTab(activeTab);
     } else if (colsChanged) {
       setLayout((currentLayout) => {
         // Through the stored 12-col values rather than column to column: a
@@ -250,6 +301,7 @@ const WidgetContainer = ({
         return nextLayout;
       });
       layoutTabRef.current = activeTab;
+      setLayoutForTab(activeTab);
     }
 
     prevGridColsRef.current = gridCols;
@@ -518,6 +570,196 @@ const WidgetContainer = ({
 
     return () => window.cancelAnimationFrame(rafId);
   }, [locked, selectedWidget, layout]);
+
+  // --- Long-press menu, size presets, and widgets arriving from other tabs ---
+  // The open menu: { widgetId, anchor: { top, left } } in page pixels.
+  const [menu, setMenu] = useState(null);
+  const longPressRef = useRef(null);
+  const lastPointerTypeRef = useRef('mouse');
+
+  const cancelLongPress = useCallback(() => {
+    const press = longPressRef.current;
+    if (!press) return;
+    clearTimeout(press.timer);
+    press.detach();
+    longPressRef.current = null;
+  }, []);
+
+  // A press that stays put long enough opens the menu. It runs alongside the
+  // grid's own drag: moving off before then is a drag, and moving well away
+  // once the menu is open closes it again, so the drag carries on.
+  const startLongPress = (widgetId, e) => {
+    lastPointerTypeRef.current = e.pointerType || 'mouse';
+    // Only where the menu's actions are wired up: the dashboard itself, not a
+    // preview of it.
+    if (!widgetMenu || locked || e.button > 0 || !e.isPrimary) return;
+    cancelLongPress();
+    const start = { x: e.clientX, y: e.clientY };
+    const pointerId = e.pointerId;
+    const press = { fired: false };
+    const onMove = (event) => {
+      if (event.pointerId !== pointerId) return;
+      const distance = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+      if (!press.fired && distance > LONG_PRESS_SLOP) {
+        cancelLongPress();
+      } else if (press.fired && distance > MENU_DRAG_AWAY) {
+        setMenu(null);
+        cancelLongPress();
+      }
+    };
+    const onEnd = (event) => {
+      if (event.pointerId === pointerId) cancelLongPress();
+    };
+    window.addEventListener('pointermove', onMove, { capture: true, passive: true });
+    window.addEventListener('pointerup', onEnd, { capture: true });
+    window.addEventListener('pointercancel', onEnd, { capture: true });
+    press.detach = () => {
+      window.removeEventListener('pointermove', onMove, { capture: true });
+      window.removeEventListener('pointerup', onEnd, { capture: true });
+      window.removeEventListener('pointercancel', onEnd, { capture: true });
+    };
+    press.timer = setTimeout(() => {
+      press.fired = true;
+      setSelectedWidget(widgetId);
+      setMenu({ widgetId, anchor: { top: start.y, left: start.x } });
+      try {
+        navigator.vibrate?.(15);
+      } catch {
+        // No vibration on this device.
+      }
+    }, LONG_PRESS_MS);
+    longPressRef.current = press;
+  };
+
+  // A right-click opens the same menu with a mouse. A touch's long press also
+  // raises a context menu in some browsers; that one is the browser's, and
+  // it's stopped so it can't cover ours.
+  const handleWidgetContextMenu = (widgetId, e) => {
+    if (locked || !widgetMenu) return;
+    e.preventDefault();
+    if (lastPointerTypeRef.current !== 'mouse') return;
+    cancelLongPress();
+    setSelectedWidget(widgetId);
+    setMenu({ widgetId, anchor: { top: e.clientY, left: e.clientX } });
+  };
+
+  useEffect(() => {
+    if (locked) {
+      cancelLongPress();
+      setMenu(null);
+    }
+  }, [locked, cancelLongPress]);
+  useEffect(() => () => cancelLongPress(), [cancelLongPress]);
+
+  // The widget's size in stored (12-column) units, so it keeps its shape on a
+  // tab drawn at another width.
+  const storedSizeOf = (item) => {
+    if (!item) return null;
+    const normalized = layoutItemToNormalized(item, gridCols);
+    return { w: normalized.w, h: item.h, minW: normalized.minW, minH: item.minH };
+  };
+
+  const handleSizePreset = (widgetId, preset) => {
+    const rows = visibleRows({
+      viewportHeight: window.innerHeight,
+      rowHeight: gridMetrics.rowHeight,
+      gap: gridMetrics.gap,
+    });
+    setLayout((currentLayout) => {
+      const resized = applySizePreset(currentLayout, widgetId, preset, { cols: gridCols, rows });
+      if (resized === currentLayout) return currentLayout;
+      const next = resized.map((item) => ({ ...item, static: locked }));
+      saveLayoutsToApi(next, activeTab, gridCols);
+      onLayoutChangeCallback?.(next);
+      return next;
+    });
+  };
+
+  // Place a widget that just came here from another tab (or was carried
+  // away and brought back), once this tab's layout has it.
+  const handledArrivalRef = useRef(null);
+  useEffect(() => {
+    if (!arrival || locked || arrival.tab !== activeTab) return;
+    if (layoutForTab !== activeTab || handledArrivalRef.current === arrival.token) return;
+    if (!layout.some((item) => item.i === arrival.widgetId)) return;
+    handledArrivalRef.current = arrival.token;
+
+    const size = arrival.size || {};
+    const live = layoutItemFromNormalized(
+      { x: 0, y: 0, w: size.w || 4, h: size.h || 3, minW: size.minW ?? 2, minH: size.minH ?? 2 },
+      gridCols
+    );
+    let cell = null;
+    if (arrival.dropAt) {
+      const grid = containerRef.current?.querySelector('.react-grid-layout');
+      const rect = grid?.getBoundingClientRect();
+      if (rect) {
+        cell = cellAtPoint({
+          left: arrival.dropAt.left,
+          top: arrival.dropAt.top,
+          gridLeft: rect.left,
+          gridTop: rect.top,
+          cols: gridCols,
+          containerWidth,
+          rowHeight: gridMetrics.rowHeight,
+          gap: gridMetrics.gap,
+          w: live.w,
+        });
+      }
+    }
+    const next = placeArrival(layout, {
+      i: arrival.widgetId,
+      w: live.w,
+      h: live.h,
+      minW: live.minW,
+      minH: live.minH,
+      cell,
+      cols: gridCols,
+    }).map((item) => ({ ...item, static: locked }));
+    setLayout(next);
+    const saved = saveLayoutsToApi(next, activeTab, gridCols, { immediate: true });
+    onLayoutChangeCallback?.(next);
+    setSelectedWidget(arrival.widgetId);
+    onArrivalDone?.(arrival.token, saved);
+    afterPaint(() => {
+      containerRef.current
+        ?.querySelector(`[data-widget-id="${CSS.escape(arrival.widgetId)}"]`)
+        ?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    });
+  }, [arrival, layout, layoutForTab, activeTab, locked, gridCols, containerWidth, gridMetrics, saveLayoutsToApi, onLayoutChangeCallback, onArrivalDone]);
+
+  // The grid's drag, reported to the cross-tab watcher.
+  const handleGridDragStart = (_layout, oldItem, _newItem, _placeholder, event, element) => {
+    if (!crossTab?.beginWatch || !oldItem) return;
+    const point = eventPoint(event);
+    crossTab.beginWatch({
+      widgetId: oldItem.i,
+      widgetName: resolveWidgetName(oldItem.i),
+      element: element?.closest?.('.widget-wrapper') || element,
+      size: storedSizeOf(oldItem),
+      x: point?.x,
+      y: point?.y,
+    });
+  };
+  const handleGridDragStop = () => {
+    crossTab?.endWatch?.();
+  };
+
+  const menuWidgetId = menu?.widgetId || null;
+  const menuWidgetName = menuWidgetId ? resolveWidgetName(menuWidgetId) : null;
+  const menuRequest = () => {
+    const item = layout.find((candidate) => candidate.i === menuWidgetId);
+    const stored = item ? layoutToNormalized([item], gridCols, savedSourcesById(widgets))[0] : null;
+    return {
+      widgetId: menuWidgetId,
+      widgetName: menuWidgetName,
+      fromTab: activeTab,
+      size: storedSizeOf(item),
+      // Where it is now, in stored units, so Undo puts it back exactly here.
+      place: stored ? { x: stored.x, y: stored.y, w: stored.w, h: stored.h } : null,
+      title: widgetMenu?.titleFor?.(menuWidgetId) || '',
+    };
+  };
 
   // --- Expanding a widget (utils/widgetExpand.js) ---
   // Only while the board is locked: unlocked, a tap selects a widget to move.
@@ -922,6 +1164,9 @@ const WidgetContainer = ({
       )}
       {layout.length > 0 && (
         <GridLayout
+          // Remounted when a drag is carried off to another tab: that ends
+          // the grid's own drag (hooks/useCrossTabDrag.js).
+          key={crossTab?.gridEpoch ?? 0}
           className="layout"
           width={containerWidth}
           layout={gridLayout}
@@ -940,8 +1185,13 @@ const WidgetContainer = ({
           compactor={GRID_COMPACTOR}
           positionStrategy={scaledStrategy}
           onLayoutChange={handleLayoutChange}
+          onDragStart={handleGridDragStart}
+          onDragStop={handleGridDragStop}
         >
           {widgets.map((widget) => {
+            // Being carried to another tab, or just arrived and not yet placed.
+            const isHidden = widget.id === crossTab?.hiddenWidgetId
+              || (arrival && !locked && arrival.tab === activeTab && arrival.widgetId === widget.id);
             const isSelected = !locked && selectedWidget === widget.id;
             // A transparent widget shows the page background through its box: no
             // card color and no resting shadow, which would otherwise draw the
@@ -1039,7 +1289,9 @@ const WidgetContainer = ({
                 className={`widget-wrapper ${isSelected ? 'selected' : ''} ${isExpanded ? 'expanded' : ''}`}
                 onClickCapture={(e) => handleExpandClickCapture(widget, e)}
                 onMouseDownCapture={(e) => handleExpandMouseDownCapture(widget, e)}
+                onContextMenu={(e) => handleWidgetContextMenu(widget.id, e)}
                 onPointerDownCapture={(e) => {
+                  if (!locked) startLongPress(widget.id, e);
                   if (!locked && !isSelected && !e.target.closest('.drag-handle') && !e.target.closest('.resize-button')) {
                     if (isInteractiveTarget(e.target)) {
                       // Select on interactive taps too so edit affordances (drag/resize) remain reachable.
@@ -1108,6 +1360,7 @@ const WidgetContainer = ({
                     backgroundImage: 'var(--hg-frame-image)',
                   }),
                   ...(settling && { transition: 'none !important' }),
+                  ...(isHidden && { visibility: 'hidden' }),
                 }}
               >
                 <FrameOrnaments />
@@ -1301,6 +1554,19 @@ const WidgetContainer = ({
           })}
         </GridLayout>
       )}
+      <WidgetLongPressMenu
+        open={Boolean(menu)}
+        anchorPosition={menu?.anchor}
+        title={menuWidgetId ? (widgetMenu?.titleFor?.(menuWidgetId) || '') : ''}
+        tabChoices={menuWidgetName && widgetMenu?.tabChoices ? widgetMenu.tabChoices(menuWidgetName) : []}
+        onMoveToTab={(toTab) => widgetMenu?.onMoveToTab?.({ ...menuRequest(), toTab })}
+        onDuplicateToTab={(toTab) => widgetMenu?.onDuplicateToTab?.({ ...menuRequest(), toTab })}
+        onNewTab={(mode) => widgetMenu?.onNewTab?.({ ...menuRequest(), mode })}
+        onSize={(preset) => handleSizePreset(menuWidgetId, preset)}
+        onOpenSettings={() => widgetMenu?.onOpenSettings?.(menuWidgetName)}
+        onRemove={() => widgetMenu?.onRemove?.(menuRequest())}
+        onClose={() => setMenu(null)}
+      />
       {children}
     </Box>
   );
