@@ -74,5 +74,16 @@
     "expand": "Expand",
     "fullPage": "Fill the page",
     "shrink": "Put back"
+  },
+  "modes": {
+    "normal": "Normal layout",
+    "menuLabel": "Mode: {{name}}. Open the mode menu",
+    "pin": "Pin {{name}}",
+    "pinHelp": "Stays until the next scheduled change",
+    "unpin": "Unpin",
+    "unpinHelp": "Go back to the schedule",
+    "switchTo": "Switch to",
+    "saveLayout": "Save this tab's layout to {{name}}",
+    "saveLayoutHelp": "Move/Resize then edits this mode's layout"
   }
 }

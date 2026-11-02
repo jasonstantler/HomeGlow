@@ -95,6 +95,7 @@ import { AdminFooter, AdminGroup, AdminNote, AdminRow } from './AdminRows.jsx';
 import SoundPicker from './SoundPicker';
 import ControlsOnDisplay from './ControlsOnDisplay';
 import ExpandWidgetsSettings from './ExpandWidgetsSettings';
+import ModesSettings from './ModesSettings.jsx';
 import { frameNameFor } from '../utils/pluginLocalStore.js';
 import useFetchTabs from '../hooks/useFetchTabs.js';
 import { MAX_DOCK_HIDE_MINUTES, screensaverPreemptsDock } from '../utils/dockIdleHide.js';
@@ -2865,6 +2866,9 @@ const AdminPanel = ({ setWidgetSettings, onPluginsChanged, onTabsChanged, onRequ
                 </AdminFooter>
               </>
             )}
+
+            {/* Modes: this display's own modes (utils/displayModes.js). */}
+            {location.section === 'modes' && <ModesSettings />}
 
             {location.section === 'screensaver' && (
               <>

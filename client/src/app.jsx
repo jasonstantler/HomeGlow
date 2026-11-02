@@ -60,7 +60,11 @@ import {
 import { personalizationTokens } from './utils/personalize.js';
 import SaveLayoutButton from './components/SaveLayoutButton.jsx';
 import { setHouseholdChangesMode, subscribeHouseholdChanges } from './utils/householdChanges.js';
-import { updateDisplayDimming, setDimmingPaused } from './utils/displayDim.js';
+import { updateDisplayDimming, setDimmingPaused, setDimmingHold } from './utils/displayDim.js';
+import useDisplayModes from './hooks/useDisplayModes.js';
+import ModeBadge from './components/ModeBadge.jsx';
+import { MODE_DIM_LEVEL, placeModeLayout, visibleGridRows } from './utils/displayModes.js';
+import { readGridMetrics } from './utils/gridMetrics.js';
 import { getServerTimezoneSync } from './utils/timezone.js';
 import { THEME_TOKENS_APPLIED_EVENT } from './utils/pluginThemeBridge.js';
 import { loadInstalledThemes, useThemeRegistry } from './utils/installedThemes.js';
@@ -382,6 +386,16 @@ const App = () => {
       console.error('Error fetching device settings:', error);
     }
   }, [API_DEVICE_URL, hydrateFromDeviceSettings]);
+
+  // This display's modes (utils/displayModes.js): on a wall display only,
+  // once its settings have loaded.
+  const displayModes = useDisplayModes({
+    deviceSettings: rawDeviceSettings,
+    apiDeviceUrl: API_DEVICE_URL,
+    onSaved: hydrateFromDeviceSettings,
+    enabled: !isMobile && deviceSettingsLoaded,
+  });
+  const shownMode = displayModes.shownMode;
 
   const fetchHouseholdSettings = useCallback(async () => {
     try {
@@ -1032,6 +1046,58 @@ const App = () => {
     setDimmingPaused(showAdminPanel);
   }, [showAdminPanel]);
 
+  // ---- Display modes (utils/displayModes.js) ----
+  const dashboardRef = useRef(null);
+  const shownModeId = shownMode?.id ?? null;
+  const shownModeRef = useRef(shownMode);
+  shownModeRef.current = shownMode;
+  const modeSettings = displayModes.settings;
+  const lastShownModeIdRef = useRef(undefined);
+
+  // When the mode changes: a quick fade, its starting tab, and its dimming.
+  useEffect(() => {
+    const previous = lastShownModeIdRef.current;
+    lastShownModeIdRef.current = shownModeId;
+    if (previous === undefined && shownModeId === null) return;
+    const mode = shownModeRef.current;
+    if (mode?.startTab && tabsRef.current.some((tab) => tab.number === mode.startTab)) {
+      setActiveTab(mode.startTab);
+    }
+    const reduceMotion = typeof window !== 'undefined'
+      && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    if (previous !== undefined && modeSettings.fade && !reduceMotion) {
+      dashboardRef.current?.animate?.([{ opacity: 0.15 }, { opacity: 1 }], { duration: 500, easing: 'ease-out' });
+    }
+  }, [shownModeId, modeSettings.fade]);
+
+  // A mode can hold the screen dimmed almost to black; a touch still wakes it.
+  const modeDims = shownMode?.dim === true;
+  useEffect(() => {
+    setDimmingHold(modeDims ? MODE_DIM_LEVEL : null);
+  }, [modeDims]);
+
+  // Back to the mode's starting tab once nobody has touched the screen for a
+  // while, so the wall comes back to what the mode is for.
+  useEffect(() => {
+    const minutes = modeSettings.returnMinutes;
+    const startTab = shownMode?.startTab;
+    if (!startTab || !minutes) return undefined;
+    const timer = setInterval(() => {
+      if (showAdminPanelRef.current || screensaverActiveRef.current) return;
+      if (Date.now() - displayModes.lastActivityRef.current < minutes * 60 * 1000) return;
+      if (!tabsRef.current.some((tab) => tab.number === startTab)) return;
+      setActiveTab((current) => (current === startTab ? current : startTab));
+    }, 15 * 1000);
+    return () => clearInterval(timer);
+  }, [shownMode?.startTab, modeSettings.returnMinutes, displayModes.lastActivityRef]);
+
+  const showModeBadge = !isMobile
+    && modeSettings.showLabel
+    && modeSettings.modes.length > 0
+    && !screensaverActive
+    && !showAdminPanel
+    && expandedWidgetSize !== 'full';
+
   // Two fingers swiped sideways change the tab, and pinch zoom can be blocked
   // (utils/twoFingerSwipe.js). This display's choice, never on a phone, which
   // has no tabs. Plugin frames get the same settings from their wrappers.
@@ -1303,11 +1369,67 @@ const App = () => {
     knownControlIds,
   }), [rawDeviceSettings, householdSettings, adminPinExists, knownControlIds]);
 
+  // The widgets on the active tab that are turned on here, with their usual
+  // size: what a mode's saved layout for the tab is laid over.
+  const widgetsOnActiveTab = useMemo(() => {
+    const names = [
+      ...['calendar', 'weather', 'chores', 'photos'].filter((name) => widgetSettings[name]?.enabled),
+      ...installedPlugins
+        .filter((plugin) => pluginSettings[plugin.filename]?.enabled)
+        .map((plugin) => `plugin:${plugin.filename}`),
+    ];
+    return names
+      .filter((name) => isWidgetAssignedToTab(name, activeTab))
+      .map((name) => ({ name, size: getWidgetLayoutForTab(name, activeTab) || { w: 4, h: 3 } }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [widgetSettings, pluginSettings, installedPlugins, widgetAssignments, activeTab]);
+
+  // While a mode with a layout for this tab is on: where each widget goes,
+  // and which newcomers have no room (utils/displayModes.js placeModeLayout).
+  const modeTabLayout = useMemo(() => {
+    const saved = shownMode?.layouts?.[activeTab];
+    if (!saved) return null;
+    const rows = typeof window === 'undefined' ? Infinity : visibleGridRows(window.innerHeight, readGridMetrics());
+    return placeModeLayout({ saved, widgets: widgetsOnActiveTab, rows });
+  }, [shownMode, activeTab, widgetsOnActiveTab]);
+
+  const hiddenByMode = (name) => Boolean(modeTabLayout?.hidden.includes(name));
+  const layoutOnActiveTab = (name) => (modeTabLayout
+    ? modeTabLayout.placed[name] || null
+    : getWidgetLayoutForTab(name, activeTab));
+
+  // Move/Resize while such a mode is on edits the mode's layout, not the
+  // display's usual one.
+  const saveLayoutsToMode = useMemo(() => {
+    if (!modeTabLayout || !shownMode) return undefined;
+    const modeId = shownMode.id;
+    return (rows, tabNumber) => {
+      const items = {};
+      rows.forEach((row) => {
+        items[row.widget_name] = { x: row.layout_x, y: row.layout_y, w: row.layout_w, h: row.layout_h };
+      });
+      void displayModes.saveTabLayout(modeId, tabNumber, items);
+    };
+  }, [modeTabLayout, shownMode, displayModes.saveTabLayout]);
+
+  // "Save this tab's layout to <mode>": what's on screen now becomes the
+  // mode's layout for this tab.
+  const saveActiveTabToMode = () => {
+    if (!shownMode) return;
+    const items = {};
+    widgetsOnActiveTab.forEach(({ name }) => {
+      if (hiddenByMode(name)) return;
+      const item = layoutOnActiveTab(name);
+      if (item) items[name] = { x: item.x, y: item.y, w: item.w, h: item.h };
+    });
+    void displayModes.saveTabLayout(shownMode.id, activeTab, items);
+  };
+
   const widgets = useMemo(() => {
     const result = [];
 
-    if (widgetSettings.calendar.enabled && isWidgetAssignedToTab('calendar', activeTab)) {
-      const dbLayout = getWidgetLayoutForTab('calendar', activeTab);
+    if (widgetSettings.calendar.enabled && isWidgetAssignedToTab('calendar', activeTab) && !hiddenByMode('calendar')) {
+      const dbLayout = layoutOnActiveTab('calendar');
       result.push({
         id: 'calendar-widget',
         transparent: Boolean(widgetSettings.calendar.transparent),
@@ -1328,8 +1450,8 @@ const App = () => {
       });
     }
 
-    if (widgetSettings.weather.enabled && isWidgetAssignedToTab('weather', activeTab)) {
-      const dbLayout = getWidgetLayoutForTab('weather', activeTab);
+    if (widgetSettings.weather.enabled && isWidgetAssignedToTab('weather', activeTab) && !hiddenByMode('weather')) {
+      const dbLayout = layoutOnActiveTab('weather');
       result.push({
         id: 'weather-widget',
         transparent: Boolean(widgetSettings.weather.transparent),
@@ -1352,8 +1474,8 @@ const App = () => {
       });
     }
 
-    if (widgetSettings.chores.enabled && isWidgetAssignedToTab('chores', activeTab)) {
-      const dbLayout = getWidgetLayoutForTab('chores', activeTab);
+    if (widgetSettings.chores.enabled && isWidgetAssignedToTab('chores', activeTab) && !hiddenByMode('chores')) {
+      const dbLayout = layoutOnActiveTab('chores');
       result.push({
         id: 'chores-widget',
         transparent: Boolean(widgetSettings.chores.transparent),
@@ -1370,8 +1492,8 @@ const App = () => {
       });
     }
 
-    if (widgetSettings.photos.enabled && isWidgetAssignedToTab('photos', activeTab)) {
-      const dbLayout = getWidgetLayoutForTab('photos', activeTab);
+    if (widgetSettings.photos.enabled && isWidgetAssignedToTab('photos', activeTab) && !hiddenByMode('photos')) {
+      const dbLayout = layoutOnActiveTab('photos');
       result.push({
         id: 'photos-widget',
         transparent: Boolean(widgetSettings.photos.transparent),
@@ -1393,9 +1515,9 @@ const App = () => {
       if (!pSettings.enabled) return;
 
       const pluginWidgetName = `plugin:${plugin.filename}`;
-      if (!isWidgetAssignedToTab(pluginWidgetName, activeTab)) return;
+      if (!isWidgetAssignedToTab(pluginWidgetName, activeTab) || hiddenByMode(pluginWidgetName)) return;
 
-      const dbLayout = getWidgetLayoutForTab(pluginWidgetName, activeTab);
+      const dbLayout = layoutOnActiveTab(pluginWidgetName);
       result.push({
         id: `plugin-${plugin.filename}`,
         transparent: Boolean(pSettings.transparent),
@@ -1418,7 +1540,7 @@ const App = () => {
     });
 
     return result;
-  }, [widgetSettings, pluginSettings, activeTab, widgetAssignments, installedPlugins, displayTheme, themeColors, demoStatus.demo, hiddenControls, frameTouch]);
+  }, [widgetSettings, pluginSettings, activeTab, widgetAssignments, installedPlugins, displayTheme, themeColors, demoStatus.demo, hiddenControls, frameTouch, modeTabLayout]);
 
   // Mobile stack (issue #118): same widget content nodes, fixed order, photos
   // excluded, grid metadata ignored.
@@ -1460,7 +1582,7 @@ const App = () => {
 
   const tree = (
     <>
-      <Box sx={{ width: '100%', minHeight: '100vh', position: 'relative', pb: '80px' }}>
+      <Box ref={dashboardRef} sx={{ width: '100%', minHeight: '100vh', position: 'relative', pb: '80px' }}>
         {/* The theme's scene. The widget grid and the phone layout each
             draw it over their own page background; a tab with no widgets
             mounts neither, so it is drawn here instead. */}
@@ -1513,6 +1635,17 @@ const App = () => {
             🏖️ Vacation Mode
           </Box>
         )}
+        {/* The mode label and its menu (utils/displayModes.js). */}
+        {showModeBadge && (
+          <ModeBadge
+            modes={displayModes.settings.modes}
+            shownMode={shownMode}
+            pinned={displayModes.pinned}
+            onPin={displayModes.pinMode}
+            onUnpin={displayModes.unpin}
+            onSaveLayout={saveActiveTabToMode}
+          />
+        )}
         {/* Its corner is the Save Layout button's while the layout is
             unlocked, which is never for long. */}
         {widgetsLocked && <UpdateIndicator />}
@@ -1536,6 +1669,7 @@ const App = () => {
             isActive={widgetsActive}
             expandSettings={screensaverSettings}
             onExpandedSizeChange={setExpandedWidgetSize}
+            onSaveLayouts={saveLayoutsToMode}
           />
         )}
         {shouldRunWeatherBackgroundPrefetch && (

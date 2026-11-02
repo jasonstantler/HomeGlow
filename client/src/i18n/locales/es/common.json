@@ -74,5 +74,16 @@
     "expand": "Ampliar",
     "fullPage": "Llenar la página",
     "shrink": "Devolver"
+  },
+  "modes": {
+    "normal": "Diseño normal",
+    "menuLabel": "Modo: {{name}}. Abrir el menú de modos",
+    "pin": "Fijar {{name}}",
+    "pinHelp": "Se mantiene hasta el próximo cambio programado",
+    "unpin": "Dejar de fijar",
+    "unpinHelp": "Volver al horario",
+    "switchTo": "Cambiar a",
+    "saveLayout": "Guardar el diseño de esta pestaña en {{name}}",
+    "saveLayoutHelp": "Mover/Cambiar tamaño editará entonces el diseño de este modo"
   }
 }

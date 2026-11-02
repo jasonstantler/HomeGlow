@@ -110,6 +110,11 @@ const WidgetContainer = ({
   expandSettings = null,
   // Told 'normal', 'half' or 'full' whenever the expanded size changes.
   onExpandedSizeChange,
+  // Saves a moved or resized layout somewhere other than this display's
+  // widget assignments: (layouts, tabNumber), with layouts in the same rows
+  // the API takes. A display mode with its own layout for the tab passes
+  // one (utils/displayModes.js); otherwise layouts save as always.
+  onSaveLayouts,
 }) => {
   const { t } = useTranslation('common');
   const API_DEVICE_URL = getDeviceApiBase(API_BASE_URL);
@@ -137,12 +142,16 @@ const WidgetContainer = ({
   // tab. Read when a save is requested, not when the debounced save fires.
   const widgetsRef = useRef(widgets);
   widgetsRef.current = widgets;
+  const onSaveLayoutsRef = useRef(onSaveLayouts);
+  onSaveLayoutsRef.current = onSaveLayouts;
 
   const saveLayoutsToApi = useCallback((layoutItems, tabNumber, cols) => {
     // Every widget is saved, but against what it was loaded from: one nobody
     // moved keeps its stored 12-col values exactly instead of being re-rounded
     // through the live column count (see layoutToNormalized).
     const savedSources = savedSourcesById(widgetsRef.current);
+    // Where to save is decided now, with the layout, not when the timer fires.
+    const saveElsewhere = onSaveLayoutsRef.current;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
       // Persist in normalized (12-col) units so layouts round-trip across breakpoints.
@@ -157,9 +166,12 @@ const WidgetContainer = ({
           layout_h: stored.h,
         }));
 
-      if (layouts.length > 0) {
-        axios.patch(`${API_DEVICE_URL}/widget-assignments/layout/bulk`, { layouts }).catch(() => { });
+      if (layouts.length === 0) return;
+      if (saveElsewhere) {
+        saveElsewhere(layouts, tabNumber);
+        return;
       }
+      axios.patch(`${API_DEVICE_URL}/widget-assignments/layout/bulk`, { layouts }).catch(() => { });
     }, 500);
   }, []);
 
