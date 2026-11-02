@@ -5293,6 +5293,105 @@ fastify.delete('/api/devices/:deviceName/widget-assignments/widget/:widgetName',
   }
 });
 
+// Moves a widget to another tab, or puts it on another tab as well (copy), in
+// one write. A tab's entry carries more than a position — the calendar's view
+// and the weather's place live there too — so the whole entry goes along. Its
+// position is cleared: the dashboard places it on arrival, where it can see
+// what else is on that tab.
+fastify.post('/api/devices/:deviceName/widget-assignments/transfer', async (request, reply) => {
+  const { deviceName } = request.params;
+  if (!deviceName) {
+    return reply.status(400).send({ error: 'deviceName is required' });
+  }
+  const { widget_name: widgetName, fromTab, toTab, copy = false } = request.body || {};
+  const from = Number.parseInt(fromTab, 10);
+  const to = Number.parseInt(toTab, 10);
+  if (!widgetName || !Number.isFinite(from) || !Number.isFinite(to)) {
+    return reply.status(400).send({ error: 'widget_name, fromTab and toTab are required' });
+  }
+  if (from === to) {
+    return reply.status(400).send({ error: 'fromTab and toTab must differ' });
+  }
+
+  try {
+    const sourceTab = getTabByNumber(deviceName, from);
+    const targetTab = getTabByNumber(deviceName, to);
+    if (!sourceTab || !targetTab) {
+      return reply.status(404).send({ error: 'Tab not found' });
+    }
+    const sourceMap = parseTabConfigJson(sourceTab.config_json);
+    const targetMap = parseTabConfigJson(targetTab.config_json);
+    const entry = sourceMap[widgetName];
+    if (!entry || typeof entry !== 'object') {
+      return reply.status(404).send({ error: 'Assignment not found' });
+    }
+    if (widgetName in targetMap) {
+      return reply.status(409).send({ error: 'Widget is already on that tab' });
+    }
+
+    targetMap[widgetName] = { ...entry, ...normalizeLayoutFields(null) };
+    db.transaction(() => {
+      saveTabConfigById(targetTab.id, targetMap);
+      if (copy !== true) {
+        delete sourceMap[widgetName];
+        saveTabConfigById(sourceTab.id, sourceMap);
+      }
+    })();
+    touchDeviceUpdateTime(deviceName);
+
+    return {
+      id: buildAssignmentId(to, widgetName),
+      device_name: deviceName,
+      tab_number: to,
+      widget_name: widgetName,
+      copied: copy === true,
+      ...targetMap[widgetName],
+    };
+  } catch (error) {
+    console.error('Error transferring widget assignment:', error);
+    reply.status(500).send({ error: 'Failed to move widget' });
+  }
+});
+
+// Puts a tab's entry for a widget back exactly as it was: what Undo sends
+// after a widget is removed from a tab, so its place and per-tab settings
+// return with it.
+fastify.put('/api/devices/:deviceName/widget-assignments/entry', async (request, reply) => {
+  const { deviceName } = request.params;
+  if (!deviceName) {
+    return reply.status(400).send({ error: 'deviceName is required' });
+  }
+  const { widget_name: widgetName, tabNumber, entry } = request.body || {};
+  const parsedTabNumber = Number.parseInt(tabNumber, 10);
+  if (!widgetName || !Number.isFinite(parsedTabNumber)) {
+    return reply.status(400).send({ error: 'widget_name and tabNumber are required' });
+  }
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return reply.status(400).send({ error: 'entry must be a JSON object' });
+  }
+
+  try {
+    const tab = getTabByNumber(deviceName, parsedTabNumber);
+    if (!tab) {
+      return reply.status(404).send({ error: 'Tab not found' });
+    }
+    const layoutMap = parseTabConfigJson(tab.config_json);
+    layoutMap[widgetName] = { ...entry, ...normalizeLayoutFields(entry) };
+    saveTabConfigById(tab.id, layoutMap);
+    touchDeviceUpdateTime(deviceName);
+    return {
+      id: buildAssignmentId(parsedTabNumber, widgetName),
+      device_name: deviceName,
+      tab_number: parsedTabNumber,
+      widget_name: widgetName,
+      ...layoutMap[widgetName],
+    };
+  } catch (error) {
+    console.error('Error restoring widget assignment:', error);
+    reply.status(500).send({ error: 'Failed to restore widget' });
+  }
+});
+
 fastify.patch('/api/devices/:deviceName/widget-assignments/layout', async (request, reply) => {
   const { deviceName } = request.params;
   if (!deviceName) {

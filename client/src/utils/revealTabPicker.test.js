@@ -39,3 +39,24 @@ describe('revealTabPicker', () => {
     expect(revealTabPicker([], doc)).toBe(false);
   });
 });
+
+describe('widget settings links', () => {
+  it('sends core widgets to Widgets and plugins to Plugins', async () => {
+    const { adminLocationForWidget } = await import('./revealTabPicker.js');
+    expect(adminLocationForWidget('calendar')).toEqual({ tab: 'dashboard', section: 'widgets' });
+    expect(adminLocationForWidget('plugin:grill.html')).toEqual({ tab: 'dashboard', section: 'plugins' });
+  });
+
+  it('scrolls to the whole settings group and flashes it, without focusing the picker', async () => {
+    const { revealWidgetSettings } = await import('./revealTabPicker.js');
+    const group = { scrollIntoView: vi.fn(), animate: vi.fn() };
+    const { doc, pickers } = page(['plugin:grill.html']);
+    pickers['plugin:grill.html'].closest = (selector) => (selector === 'section' ? group : null);
+
+    expect(revealWidgetSettings('plugin:grill.html', doc)).toBe(true);
+    expect(group.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    expect(group.animate).toHaveBeenCalled();
+    expect(pickers['plugin:grill.html'].input.focus).not.toHaveBeenCalled();
+    expect(revealWidgetSettings('weather', doc)).toBe(false);
+  });
+});

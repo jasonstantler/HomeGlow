@@ -236,6 +236,9 @@ const TabBar = ({
   theme,
   themeMode,
   screensaverCountdown,
+  // A tab a widget is being dragged over (hooks/useCrossTabDrag.js): it
+  // lights up, and opens if the widget is held there.
+  dragOverTab = null,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuAnchorRef = useRef(null);
@@ -441,10 +444,12 @@ const TabBar = ({
         {displayTabs.map((tab) => {
           const tabNumber = tab.number ?? tab.id;
           const isActive = activeTab === tabNumber;
+          const isDragOver = dragOverTab === tabNumber;
 
           return (
             <Box
               key={tab.id ?? tabNumber}
+              data-dock-tab={tabNumber}
               sx={{ position: 'relative' }}
             >
               {!widgetsLocked && tabNumber !== 1 && (
@@ -490,6 +495,12 @@ const TabBar = ({
                     backgroundImage: isActive ? 'var(--dock-active-image)' : 'none',
                     border: isActive ? '1.5px solid var(--dock-active-border)' : '1.5px solid transparent',
                     boxShadow: isActive ? '0 2px 8px var(--hg-black-20)' : 'none',
+                    ...(isDragOver && {
+                      backgroundColor: 'rgba(var(--accent-rgb), 0.25)',
+                      border: '1.5px solid var(--accent)',
+                      transform: 'translateY(-4px) scale(1.12)',
+                      boxShadow: '0 0 0 4px rgba(var(--accent-rgb), 0.25)',
+                    }),
                     '&:hover': {
                       backgroundColor: isActive ? 'var(--dock-active-bg)' : 'var(--hg-white-10)',
                       transform: 'translateY(-2px)',

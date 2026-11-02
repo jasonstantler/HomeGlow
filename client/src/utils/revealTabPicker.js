@@ -19,3 +19,34 @@ export function revealTabPicker(widgetNames, doc = document) {
   }
   return false;
 }
+
+/**
+ * Where a widget's settings are in Admin: core widgets under Dashboard →
+ * Widgets, plugins under Dashboard → Plugins.
+ */
+export function adminLocationForWidget(widgetName) {
+  return {
+    tab: 'dashboard',
+    section: String(widgetName || '').startsWith('plugin:') ? 'plugins' : 'widgets',
+  };
+}
+
+/**
+ * Bring a widget's settings group into view and flash it, without opening its
+ * tab picker (the widget menu's "Widget settings"). False when it isn't on
+ * the page yet — Admin may still be loading, or waiting for its PIN.
+ */
+export function revealWidgetSettings(widgetName, doc = document) {
+  const picker = doc.querySelector(`[data-tab-picker=${quoted(widgetName)}]`);
+  if (!picker) return false;
+  const group = picker.closest?.('section') || picker;
+  group.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  group.animate?.(
+    [
+      { boxShadow: '0 0 0 3px var(--accent)', borderRadius: '12px' },
+      { boxShadow: '0 0 0 3px transparent', borderRadius: '12px' },
+    ],
+    { duration: 1600, easing: 'ease-out' }
+  );
+  return true;
+}
