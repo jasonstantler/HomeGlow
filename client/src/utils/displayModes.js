@@ -17,6 +17,8 @@
 //
 // Everything here is pure, for tests; hooks/useDisplayModes.js runs it.
 
+import { normalizeTakeovers } from './takeovers.js';
+
 // Where a display keeps its modes in its device settings.
 export const DISPLAY_MODES_KEY = 'displayModes';
 
@@ -159,6 +161,7 @@ export function normalizeModesSettings(raw) {
     touchWaitSeconds: clampInt(source.touchWaitSeconds, 0, 600, DEFAULT_MODES_SETTINGS.touchWaitSeconds),
     returnMinutes: clampInt(source.returnMinutes, 0, 120, DEFAULT_MODES_SETTINGS.returnMinutes),
     ha: normalizeHa(source.ha),
+    takeovers: normalizeTakeovers(source.takeovers),
   };
 }
 

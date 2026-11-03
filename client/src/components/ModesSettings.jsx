@@ -25,7 +25,12 @@ import {
   HomeOutlined,
   Save,
   ToggleOnOutlined,
+  VerticalAlignBottom,
+  VerticalAlignTop,
+  Fullscreen,
+  PictureInPictureAltOutlined,
 } from '@mui/icons-material';
+import { DURATIONS, LEVELS, newTakeoverId } from '../utils/takeovers.js';
 import Autocomplete from '@mui/material/Autocomplete';
 import { useTranslation } from 'react-i18next';
 import { AdminFooter, AdminGroup, AdminNote, AdminRow } from './AdminRows.jsx';
@@ -115,6 +120,8 @@ const ModesSettings = ({ onOpenConnections }) => {
   const [haConnection, setHaConnection] = useState(null);
   const [entities, setEntities] = useState([]);
   const [entitiesLoading, setEntitiesLoading] = useState(false);
+  const [plugins, setPlugins] = useState([]);
+  const [editingTakeover, setEditingTakeover] = useState(null);
 
   const flash = (type, text) => {
     const next = { type, text };
@@ -136,6 +143,9 @@ const ModesSettings = ({ onOpenConnections }) => {
       setBehavior(modes);
       setTabs(Array.isArray(tabsResponse.data) ? tabsResponse.data : []);
       setAssignments(Array.isArray(assignmentsResponse.data) ? assignmentsResponse.data : []);
+      axios.get(`${API_BASE_URL}/api/widgets`)
+        .then(({ data }) => setPlugins(Array.isArray(data) ? data : []))
+        .catch(() => setPlugins([]));
       try {
         const { data } = await axios.get(`${apiDeviceUrl}/modes/ha`);
         setHaConnection({ ...data, configured: Boolean(data?.connected) });
@@ -212,8 +222,16 @@ const ModesSettings = ({ onOpenConnections }) => {
   };
 
   const widgetLabel = (name) => (name.startsWith('plugin:')
-    ? name.slice('plugin:'.length).replace(/\.html?$/i, '')
+    ? (plugins.find((p) => `plugin:${p.filename}` === name)?.name || name.slice('plugin:'.length).replace(/\.html?$/i, ''))
     : t(`admin:screensaver.expand.widgetNames.${name}`, { defaultValue: name }));
+
+  // Widgets turned on here: what can take over.
+  const takeoverWidgets = [
+    ...CORE_WIDGETS.filter((name) => deviceSettings.widgetSettings?.[name]?.enabled),
+    ...plugins
+      .filter((p) => deviceSettings.pluginSettings?.[p.filename]?.enabled)
+      .map((p) => `plugin:${p.filename}`),
+  ].map((name) => ({ name, label: widgetLabel(name) }));
 
   const scheduleText = (schedule) => {
     if (!schedule) return t('admin:modes.noSchedule');
@@ -366,6 +384,22 @@ const ModesSettings = ({ onOpenConnections }) => {
         onOpenConnections={onOpenConnections}
       />
 
+      <TakeoversGroup
+        rules={stored.takeovers}
+        haConfigured={haConfigured}
+        widgetLabel={widgetLabel}
+        entityName={entityName}
+        onAdd={() => setEditingTakeover({
+          id: newTakeoverId(), widget: takeoverWidgets[0]?.name || '', entity: '', op: 'is', state: '', level: 'high', place: 'bottom', seconds: 0, enabled: true,
+        })}
+        onEdit={setEditingTakeover}
+        onToggle={(rule, enabled) => persist(
+          { ...stored, takeovers: stored.takeovers.map((item) => (item.id === rule.id ? { ...item, enabled } : item)) },
+          t('admin:modes.savedBehavior')
+        )}
+        onOpenConnections={onOpenConnections}
+      />
+
       <AdminGroup title={t('admin:modes.behaviorHeading')}>
         <AdminRow
           label={t('admin:modes.showLabel')}
@@ -427,6 +461,30 @@ const ModesSettings = ({ onOpenConnections }) => {
         </Button>
       </AdminFooter>
 
+      {editingTakeover && (
+        <TakeoverDialog
+          rule={editingTakeover}
+          isNew={!stored.takeovers.some((item) => item.id === editingTakeover.id)}
+          widgets={takeoverWidgets}
+          entities={entities}
+          entitiesLoading={entitiesLoading}
+          saving={saving}
+          onCancel={() => setEditingTakeover(null)}
+          onSave={async (rule) => {
+            const exists = stored.takeovers.some((item) => item.id === rule.id);
+            const takeovers = exists
+              ? stored.takeovers.map((item) => (item.id === rule.id ? rule : item))
+              : [...stored.takeovers, rule];
+            if (await persist({ ...stored, takeovers }, t('admin:modes.takeovers.saved', { name: widgetLabel(rule.widget) }))) setEditingTakeover(null);
+          }}
+          onDelete={async (rule) => {
+            if (!window.confirm(t('admin:modes.takeovers.confirmDelete', { name: widgetLabel(rule.widget) }))) return;
+            const takeovers = stored.takeovers.filter((item) => item.id !== rule.id);
+            if (await persist({ ...stored, takeovers }, t('admin:modes.takeovers.deleted'))) setEditingTakeover(null);
+          }}
+        />
+      )}
+
       {editing && (
         <ModeDialog
           mode={editing}
@@ -447,6 +505,162 @@ const ModesSettings = ({ onOpenConnections }) => {
         />
       )}
     </>
+  );
+};
+
+const LEVEL_DOT = { urgent: 'var(--hg-error, #d32f2f)', high: '#E0A030', normal: 'var(--accent)' };
+const PLACE_ICON = { bottom: <VerticalAlignBottom fontSize="small" />, top: <VerticalAlignTop fontSize="small" />, full: <Fullscreen fontSize="small" /> };
+
+// Admin → Modes → Takeovers: widgets that take over part of the wall.
+const TakeoversGroup = ({ rules, haConfigured, widgetLabel, entityName, onAdd, onEdit, onToggle, onOpenConnections }) => {
+  const { t } = useTranslation(['admin']);
+  const durationText = (seconds) => (seconds ? t('admin:modes.takeovers.for', { time: durationLabel(t, seconds) }) : t('admin:modes.takeovers.whileOn'));
+  return (
+    <AdminGroup
+      title={t('admin:modes.takeovers.heading')}
+      action={haConfigured ? (
+        <Button size="small" startIcon={<Add />} onClick={onAdd}>{t('admin:modes.takeovers.add')}</Button>
+      ) : null}
+    >
+      <Typography variant="body2" color="text.secondary" sx={{ px: 2, pt: 1.5 }}>
+        {t('admin:modes.takeovers.help')}
+      </Typography>
+      {!haConfigured && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 2, flexWrap: 'wrap' }}>
+          <Typography variant="body2" sx={{ flex: '1 1 240px' }}>{t('admin:modes.takeovers.needsHa')}</Typography>
+          <Button variant="outlined" onClick={onOpenConnections}>{t('admin:modes.ha.openConnections')}</Button>
+        </Box>
+      )}
+      {haConfigured && rules.length === 0 && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 2 }}>
+          <PictureInPictureAltOutlined color="disabled" sx={{ fontSize: 32 }} />
+          <Typography variant="body2" color="text.secondary">{t('admin:modes.takeovers.empty')}</Typography>
+        </Box>
+      )}
+      {rules.map((rule) => (
+        <Box key={rule.id} sx={{ display: 'flex', gap: 1.5, p: 1.5, alignItems: 'center', opacity: rule.enabled ? 1 : 0.55 }}>
+          <Box sx={{ width: 8, alignSelf: 'stretch', minHeight: 40, borderRadius: 1, backgroundColor: LEVEL_DOT[rule.level], flex: 'none' }} />
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography sx={{ fontWeight: 700 }}>{widgetLabel(rule.widget)}</Typography>
+            <Typography variant="body2" color="text.secondary" noWrap>
+              {t(rule.op === 'is_not' ? 'admin:modes.takeovers.whenIsNot' : 'admin:modes.takeovers.whenIs', { name: entityName(rule.entity), state: rule.state })}
+            </Typography>
+            <Stack direction="row" spacing={0.75} useFlexGap sx={{ flexWrap: 'wrap', mt: 0.75 }}>
+              <Chip size="small" label={t(`admin:modes.takeovers.levels.${rule.level}`)} />
+              <Chip size="small" icon={PLACE_ICON[rule.place]} label={t(`admin:modes.takeovers.places.${rule.place}`)} />
+              <Chip size="small" label={durationText(rule.seconds)} />
+            </Stack>
+          </Box>
+          <Switch
+            checked={rule.enabled}
+            onChange={(e) => onToggle(rule, e.target.checked)}
+            slotProps={{ input: { 'aria-label': t('admin:modes.takeovers.enabled', { name: widgetLabel(rule.widget) }) } }}
+          />
+          <Button size="small" onClick={() => onEdit(rule)}>{t('admin:modes.editDetails')}</Button>
+        </Box>
+      ))}
+    </AdminGroup>
+  );
+};
+
+const durationLabel = (t, seconds) => (seconds < 60
+  ? t('admin:modes.takeovers.seconds', { count: seconds })
+  : t('admin:modes.takeovers.minutes', { count: seconds / 60 }));
+
+const TakeoverDialog = ({ rule, isNew, widgets, entities, entitiesLoading, saving, onCancel, onSave, onDelete }) => {
+  const { t } = useTranslation(['admin']);
+  const [draft, setDraft] = useState(rule);
+  const set = (patch) => setDraft((prev) => ({ ...prev, ...patch }));
+  const entity = draft.entity ? entities.find((e) => e.entity_id === draft.entity) : null;
+  const isPlugin = draft.widget.startsWith('plugin:');
+  const canSave = draft.widget && draft.entity && draft.state && !saving;
+  const toggleSx = { '& .MuiToggleButton-root': { textTransform: 'none', flex: 1, gap: 0.75, py: 1 } };
+
+  return (
+    <Dialog open onClose={onCancel} maxWidth="sm" fullWidth>
+      <DialogTitle>{isNew ? t('admin:modes.takeovers.newTitle') : t('admin:modes.takeovers.editTitle')}</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2.5} sx={{ pt: 1 }}>
+          <TextField select label={t('admin:modes.takeovers.widget')} value={draft.widget} onChange={(e) => set({ widget: e.target.value })}>
+            {widgets.map((widget) => <MenuItem key={widget.name} value={widget.name}>{widget.label}</MenuItem>)}
+          </TextField>
+
+          <Box>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>{t('admin:modes.takeovers.when')}</Typography>
+            <Stack spacing={2}>
+              <HaEntityPicker
+                entities={entities}
+                loading={entitiesLoading}
+                value={draft.entity || null}
+                onChange={(id) => {
+                  const picked = entities.find((e) => e.entity_id === id);
+                  // Most "show it while something's on" rules read best as
+                  // "is not off" for things that have more than on and off.
+                  const suggestions = statesFor(picked);
+                  const offish = suggestions.includes('off') ? 'off' : '';
+                  set({ entity: id || '', state: offish || suggestions[0] || '', op: offish && !['binary_sensor', 'input_boolean', 'switch'].includes((id || '').split('.')[0]) ? 'is_not' : 'is' });
+                }}
+                label={t('admin:modes.takeovers.entity')}
+              />
+              <Stack direction="row" spacing={2}>
+                <TextField select label={t('admin:modes.takeovers.op')} value={draft.op} onChange={(e) => set({ op: e.target.value })} sx={{ width: 150 }}>
+                  <MenuItem value="is">{t('admin:modes.takeovers.ops.is')}</MenuItem>
+                  <MenuItem value="is_not">{t('admin:modes.takeovers.ops.is_not')}</MenuItem>
+                </TextField>
+                <Autocomplete
+                  freeSolo
+                  options={statesFor(entity)}
+                  value={draft.state}
+                  onInputChange={(_, value) => set({ state: value.slice(0, 100) })}
+                  renderInput={(params) => (
+                    <TextField {...params} label={t('admin:modes.ha.whenState')} helperText={entity ? t('admin:modes.ha.whenNow', { state: entity.state }) : ' '} />
+                  )}
+                  sx={{ flex: 1 }}
+                />
+              </Stack>
+            </Stack>
+          </Box>
+
+          <Box>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>{t('admin:modes.takeovers.importance')}</Typography>
+            <ToggleButtonGroup exclusive fullWidth value={draft.level} onChange={(_, level) => level && set({ level })} sx={toggleSx}>
+              {LEVELS.map((level) => (
+                <ToggleButton key={level} value={level}>
+                  <Box component="span" sx={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: LEVEL_DOT[level] }} />
+                  {t(`admin:modes.takeovers.levels.${level}`)}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>{t(`admin:modes.takeovers.levelHelp.${draft.level}`)}</Typography>
+          </Box>
+
+          <Box>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>{t('admin:modes.takeovers.where')}</Typography>
+            <ToggleButtonGroup exclusive fullWidth value={draft.place} onChange={(_, place) => place && set({ place })} sx={toggleSx}>
+              {['bottom', 'top', 'full'].map((place) => (
+                <ToggleButton key={place} value={place}>{PLACE_ICON[place]}{t(`admin:modes.takeovers.places.${place}`)}</ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>{t('admin:modes.takeovers.whereHelp')}</Typography>
+          </Box>
+
+          <TextField select label={t('admin:modes.takeovers.howLong')} value={draft.seconds} onChange={(e) => set({ seconds: Number(e.target.value) })}>
+            {DURATIONS.map((seconds) => (
+              <MenuItem key={seconds} value={seconds}>{seconds ? durationLabel(t, seconds) : t('admin:modes.takeovers.whileOn')}</MenuItem>
+            ))}
+          </TextField>
+
+          {isPlugin && <Alert severity="info" variant="outlined">{t('admin:modes.takeovers.pluginNote')}</Alert>}
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ justifyContent: 'space-between', px: 3, pb: 2 }}>
+        {!isNew ? <Button color="error" onClick={() => onDelete(rule)} disabled={saving}>{t('admin:modes.takeovers.delete')}</Button> : <span />}
+        <Stack direction="row" spacing={1}>
+          <Button onClick={onCancel}>{t('admin:modes.cancel')}</Button>
+          <Button variant="contained" disabled={!canSave} onClick={() => onSave({ ...draft })}>{t('admin:modes.takeovers.save')}</Button>
+        </Stack>
+      </DialogActions>
+    </Dialog>
   );
 };
 

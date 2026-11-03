@@ -1104,6 +1104,57 @@
       "alarmChip": "Alarma · hasta {{until}}",
       "whenChip": "Cuando {{name}} está {{state}}",
       "homeChip": "Solo con alguien en casa: {{names}}"
+    },
+    "takeovers": {
+      "heading": "Pantalla completa automática",
+      "add": "Añadir",
+      "help": "Un widget puede ocupar parte de la pantalla cuando algo te necesita, como la tarjeta de la parrilla mientras está encendida, y luego devolverla. Dos pueden compartir la pantalla, una mitad cada uno; si ambos quieren la misma mitad, el menos importante toma la otra.",
+      "needsHa": "Se activan desde Home Assistant. Conéctalo primero.",
+      "empty": "Todavía no hay ninguno.",
+      "whenIs": "Cuando {{name}} está {{state}}",
+      "whenIsNot": "Cuando {{name}} no está {{state}}",
+      "levels": {
+        "normal": "Info",
+        "high": "Aviso",
+        "urgent": "Urgente"
+      },
+      "levelHelp": {
+        "normal": "Aparece sin ruido. Espera mientras la pantalla está atenuada o hay un modo fijado.",
+        "high": "Aparece sin ruido, por encima de Info. Espera mientras la pantalla está atenuada o hay un modo fijado.",
+        "urgent": "Despierta la pantalla, suena y aparece incluso sobre un modo fijado."
+      },
+      "places": {
+        "bottom": "Mitad inferior",
+        "top": "Mitad superior",
+        "full": "Pantalla completa"
+      },
+      "whileOn": "Mientras esté activo",
+      "for": "Durante {{time}}",
+      "seconds_one": "{{count}} segundo",
+      "seconds_other": "{{count}} segundos",
+      "minutes_one": "{{count}} minuto",
+      "minutes_other": "{{count}} minutos",
+      "enabled": "{{name}} puede ocupar la pantalla",
+      "newTitle": "Nuevo",
+      "editTitle": "Editar",
+      "widget": "Widget",
+      "when": "Mostrarlo cuando",
+      "entity": "Entidad de Home Assistant",
+      "op": "Está",
+      "ops": {
+        "is": "está",
+        "is_not": "no está"
+      },
+      "importance": "Importancia",
+      "where": "Dónde",
+      "whereHelp": "Cubre esa parte de la pestaña que se muestre. Lo de debajo no se mueve y la barra sigue visible.",
+      "howLong": "Cuánto tiempo",
+      "pluginNote": "Este plugin puede subirse a Urgente (comida en su punto, por ejemplo) o cerrarse cuando termine, si sabe hacerlo.",
+      "saved": "Guardado: {{name}}.",
+      "deleted": "Eliminado.",
+      "confirmDelete": "¿Dejar que {{name}} deje de ocupar la pantalla?",
+      "delete": "Eliminar",
+      "save": "Guardar"
     }
   }
 }

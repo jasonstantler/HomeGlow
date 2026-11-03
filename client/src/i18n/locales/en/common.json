@@ -99,5 +99,13 @@
       "moveTo": "Move to tab",
       "tabs": "Tabs"
     }
+  },
+  "takeovers": {
+    "level": {
+      "urgent": "Urgent",
+      "high": "Heads up",
+      "normal": "Info"
+    },
+    "close": "Close {{name}}"
   }
 }

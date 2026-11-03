@@ -1104,6 +1104,57 @@
       "alarmChip": "Alarm · until {{until}}",
       "whenChip": "When {{name}} is {{state}}",
       "homeChip": "Only when home: {{names}}"
+    },
+    "takeovers": {
+      "heading": "Takeovers",
+      "add": "Add takeover",
+      "help": "A widget can take over part of the wall when something needs you, like the Grill card while the grill is on, then hand the screen back. Two can share the screen, one per half; if both want the same half, the less important one takes the other.",
+      "needsHa": "Takeovers start from Home Assistant. Connect it first.",
+      "empty": "Nothing takes over yet.",
+      "whenIs": "When {{name}} is {{state}}",
+      "whenIsNot": "When {{name}} is not {{state}}",
+      "levels": {
+        "normal": "Info",
+        "high": "Heads up",
+        "urgent": "Urgent"
+      },
+      "levelHelp": {
+        "normal": "Shows quietly. Waits while the screen is dimmed or a mode is pinned.",
+        "high": "Shows quietly, above Info. Waits while the screen is dimmed or a mode is pinned.",
+        "urgent": "Wakes the screen, chimes, and shows even over a pinned mode."
+      },
+      "places": {
+        "bottom": "Bottom half",
+        "top": "Top half",
+        "full": "Whole screen"
+      },
+      "whileOn": "While it's on",
+      "for": "For {{time}}",
+      "seconds_one": "{{count}} second",
+      "seconds_other": "{{count}} seconds",
+      "minutes_one": "{{count}} minute",
+      "minutes_other": "{{count}} minutes",
+      "enabled": "{{name}} can take over",
+      "newTitle": "New takeover",
+      "editTitle": "Edit takeover",
+      "widget": "Widget",
+      "when": "Show it when",
+      "entity": "Home Assistant entity",
+      "op": "Is",
+      "ops": {
+        "is": "is",
+        "is_not": "is not"
+      },
+      "importance": "Importance",
+      "where": "Where",
+      "whereHelp": "Covers that part of whatever tab is showing. Nothing underneath moves, and the dock stays in view.",
+      "howLong": "How long",
+      "pluginNote": "This plugin can raise itself to Urgent (food at target, for one) or close itself when it's done, if it knows how.",
+      "saved": "Saved the {{name}} takeover.",
+      "deleted": "Deleted the takeover.",
+      "confirmDelete": "Stop {{name}} taking over?",
+      "delete": "Delete",
+      "save": "Save takeover"
     }
   }
 }

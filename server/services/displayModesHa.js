@@ -70,6 +70,10 @@ function entityRefs(displayModes) {
     if (isEntityId(mode?.when?.entity)) ids.add(mode.when.entity);
     (Array.isArray(mode?.onlyHome) ? mode.onlyHome : []).filter(isEntityId).forEach((id) => ids.add(id));
   }
+  // Takeovers (client/src/utils/takeovers.js): what starts each one.
+  for (const rule of Array.isArray(displayModes?.takeovers) ? displayModes.takeovers : []) {
+    if (rule?.enabled !== false && isEntityId(rule?.entity)) ids.add(rule.entity);
+  }
   return [...ids].slice(0, 64);
 }
 

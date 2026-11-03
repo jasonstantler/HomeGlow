@@ -44,6 +44,7 @@ const readPin = () => readJson(PIN_STORAGE_KEY, (raw) => raw && typeof raw === '
 // Does this display's mode setup read anything from Home Assistant?
 const usesHa = (settings) => Boolean(settings.ha.helper)
   || settings.ha.wake.length > 0
+  || settings.takeovers.some((rule) => rule.enabled)
   || settings.modes.some((mode) => mode.alarm || mode.when || mode.onlyHome.length > 0);
 
 /**
@@ -313,6 +314,8 @@ export default function useDisplayModes({ deviceSettings, apiDeviceUrl, onSaved,
     source,
     scheduledId: automaticRef.current.id,
     pinned: Boolean(pin),
+    // What Home Assistant said last (takeovers read it too), or null.
+    haStates: haState?.connected && haState.reachable !== false ? haState.states || {} : null,
     pinMode,
     unpin,
     saveTabLayout,

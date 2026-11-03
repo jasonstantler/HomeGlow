@@ -99,5 +99,13 @@
       "moveTo": "Mover a la pestaña",
       "tabs": "Pestañas"
     }
+  },
+  "takeovers": {
+    "level": {
+      "urgent": "Urgente",
+      "high": "Aviso",
+      "normal": "Info"
+    },
+    "close": "Cerrar {{name}}"
   }
 }

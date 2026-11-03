@@ -64,6 +64,8 @@ import { updateDisplayDimming, setDimmingPaused, setDimmingHold } from './utils/
 import useDisplayModes from './hooks/useDisplayModes.js';
 import ModeBadge from './components/ModeBadge.jsx';
 import useCarryToTab, { dockTargetFrom } from './hooks/useCarryToTab.jsx';
+import useTakeovers from './hooks/useTakeovers.js';
+import TakeoverLayer from './components/TakeoverLayer.jsx';
 import {
   MODE_DIM_LEVEL,
   firstOpenSpot,
@@ -1686,6 +1688,23 @@ const App = () => {
   });
   const carriedName = carry.carrying?.name || null;
 
+  // Takeovers (hooks/useTakeovers.js): widgets taking over part of the wall.
+  // One showing there is left out of the grid, so it never runs twice.
+  const takeovers = useTakeovers({
+    rules: displayModes.settings.takeovers,
+    haStates: displayModes.haStates,
+    pinned: displayModes.pinned,
+    enabled: !isMobile && deviceSettingsLoaded,
+  });
+  const takeoverShowing = takeovers.showing;
+  const takeoverNameFor = (name) => {
+    if (name.startsWith('plugin:')) {
+      const plugin = installedPlugins.find((item) => `plugin:${item.filename}` === name);
+      return plugin?.name || name.slice('plugin:'.length).replace(/\.html?$/i, '');
+    }
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  };
+
   const saveEditorDrafts = async (drafts) => {
     await displayModes.saveModeTabs(layoutEditor.modeId, drafts);
     window.dispatchEvent(new Event(MODE_LAYOUTS_SAVED_EVENT));
@@ -1695,11 +1714,12 @@ const App = () => {
     () => makeWidgetList(
       activeTab,
       (name) => name !== carriedName
+        && !takeoverShowing.has(name)
         && (modeTabLayout ? Boolean(modeTabLayout.placed[name]) : isWidgetAssignedToTab(name, activeTab)),
       layoutOnActiveTab
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [widgetSettings, pluginSettings, activeTab, widgetAssignments, installedPlugins, displayTheme, themeColors, demoStatus.demo, hiddenControls, frameTouch, modeTabLayout, carriedName]
+    [widgetSettings, pluginSettings, activeTab, widgetAssignments, installedPlugins, displayTheme, themeColors, demoStatus.demo, hiddenControls, frameTouch, modeTabLayout, carriedName, takeoverShowing]
   );
 
   // Mobile stack (issue #118): same widget content nodes, fixed order, photos
@@ -1835,6 +1855,14 @@ const App = () => {
           <MobileDashboard widgets={mobileWidgets} />
         )}
         {carry.overlay}
+        {!layoutEditor && !screensaverActive && (
+          <TakeoverLayer
+            slots={takeovers.slots}
+            contentFor={(name) => makeWidgetList(activeTab, (n) => n === name, () => ({ x: 0, y: 0, w: 12, h: 6 }))[0]?.content || null}
+            nameFor={takeoverNameFor}
+            onDismiss={takeovers.dismiss}
+          />
+        )}
         {!isMobile && widgets.length > 0 && !layoutEditor && (
           <Box ref={dashboardGridRef}>
           <WidgetContainer

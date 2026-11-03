@@ -24,6 +24,8 @@ export const PLUGIN_FRAME_SANDBOX = 'allow-scripts allow-forms allow-popups';
 // browser still asks the household first. Scoped to the plugin's own address.
 export const PLUGIN_FRAME_ALLOW = 'geolocation';
 const FRAME_ORIGIN = 'null';
+// A plugin asked for (or let go of) the wall's attention: hooks/useTakeovers.js.
+export const PLUGIN_ATTENTION_EVENT = 'homeglow:plugin-attention';
 const TO_FRAME = '*';
 
 const PluginWidgetWrapper = ({
@@ -123,6 +125,17 @@ const PluginWidgetWrapper = ({
       // rate-limits per plugin.
       if (acceptPluginCelebrateMessage(event, frame, iframeOrigin)) {
         requestCelebration(`plugin:${filename}`);
+        return;
+      }
+      // HomeGlow.attention(): raise or close this plugin's takeover
+      // (utils/takeovers.js). Only from this wrapper's own frame.
+      if (frame && event.source === frame && event.origin === iframeOrigin && event.data?.type === 'homeglow:attention') {
+        const { level, size } = event.data;
+        if (level === null || ['normal', 'high', 'urgent'].includes(level)) {
+          window.dispatchEvent(new CustomEvent(PLUGIN_ATTENTION_EVENT, {
+            detail: { widget: `plugin:${filename}`, level, size: size === 'full' || size === 'half' ? size : null },
+          }));
+        }
         return;
       }
       // A double-tap or a touch inside the frame, for expanding. Raised on
