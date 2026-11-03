@@ -18,9 +18,19 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material';
-import { Add, DashboardCustomizeOutlined, Save } from '@mui/icons-material';
+import {
+  Add,
+  AlarmOutlined,
+  DashboardCustomizeOutlined,
+  HomeOutlined,
+  Save,
+  ToggleOnOutlined,
+} from '@mui/icons-material';
+import Autocomplete from '@mui/material/Autocomplete';
 import { useTranslation } from 'react-i18next';
 import { AdminFooter, AdminGroup, AdminNote, AdminRow } from './AdminRows.jsx';
+import ModesHaSettings from './ModesHaSettings.jsx';
+import HaEntityPicker, { entitiesOfKind } from './HaEntityPicker.jsx';
 import { API_BASE_URL } from '../utils/apiConfig.js';
 import { getDeviceApiBase } from '../utils/deviceName.js';
 import { editWholeNumber } from '../utils/wholeNumberField.js';
@@ -50,7 +60,33 @@ const emptyMode = () => ({
   dim: false,
   layouts: {},
   hidden: {},
+  alarm: null,
+  when: null,
+  onlyHome: [],
 });
+
+// The states worth offering for "when <entity> is …".
+const STATE_SUGGESTIONS = {
+  binary_sensor: ['on', 'off'],
+  input_boolean: ['on', 'off'],
+  switch: ['on', 'off'],
+  light: ['on', 'off'],
+  fan: ['on', 'off'],
+  person: ['home', 'not_home'],
+  device_tracker: ['home', 'not_home'],
+  lock: ['locked', 'unlocked'],
+  cover: ['open', 'closed'],
+  media_player: ['playing', 'paused', 'idle', 'off'],
+  alarm_control_panel: ['disarmed', 'armed_home', 'armed_away', 'armed_night', 'triggered'],
+  vacuum: ['cleaning', 'docked', 'returning', 'error'],
+};
+const statesFor = (entity) => {
+  if (!entity) return [];
+  if (Array.isArray(entity.options)) return entity.options;
+  const domain = entity.entity_id.split('.')[0];
+  const list = STATE_SUGGESTIONS[domain] || [];
+  return entity.state && !list.includes(entity.state) ? [...list, entity.state] : list;
+};
 
 const formatClock = (minutes, locale) => {
   const date = new Date(2000, 0, 1, Math.floor(minutes / 60), minutes % 60);
@@ -63,7 +99,7 @@ const formatClock = (minutes, locale) => {
  * with the section's Save button. Everything is this display's own, kept in
  * its device settings, like its layouts.
  */
-const ModesSettings = () => {
+const ModesSettings = ({ onOpenConnections }) => {
   const { t, i18n } = useTranslation(['admin', 'common']);
   const apiDeviceUrl = getDeviceApiBase(API_BASE_URL);
   const [stored, setStored] = useState(null);
@@ -74,6 +110,11 @@ const ModesSettings = () => {
   const [editing, setEditing] = useState(null);
   const [message, setMessage] = useState(null);
   const [saving, setSaving] = useState(false);
+  // Home Assistant: what this display's modes read, and its entities for the
+  // pickers (loaded once it's known to be connected).
+  const [haConnection, setHaConnection] = useState(null);
+  const [entities, setEntities] = useState([]);
+  const [entitiesLoading, setEntitiesLoading] = useState(false);
 
   const flash = (type, text) => {
     const next = { type, text };
@@ -95,6 +136,12 @@ const ModesSettings = () => {
       setBehavior(modes);
       setTabs(Array.isArray(tabsResponse.data) ? tabsResponse.data : []);
       setAssignments(Array.isArray(assignmentsResponse.data) ? assignmentsResponse.data : []);
+      try {
+        const { data } = await axios.get(`${apiDeviceUrl}/modes/ha`);
+        setHaConnection({ ...data, configured: Boolean(data?.connected) });
+      } catch {
+        setHaConnection({ configured: false, states: {} });
+      }
     } catch (error) {
       console.error('Error loading modes:', error);
       flash('error', t('admin:modes.loadFailed'));
@@ -102,6 +149,21 @@ const ModesSettings = () => {
   }, [apiDeviceUrl, t]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const haConfigured = Boolean(haConnection?.configured);
+  useEffect(() => {
+    if (!haConfigured) return;
+    setEntitiesLoading(true);
+    axios.get(`${apiDeviceUrl}/modes/ha/entities`, { params: { kind: 'any' } })
+      .then(({ data }) => setEntities(Array.isArray(data?.entities) ? data.entities : []))
+      .catch(() => setEntities([]))
+      .finally(() => setEntitiesLoading(false));
+  }, [haConfigured, apiDeviceUrl]);
+  // Names from the entity list, else from what the display last read (so they
+  // still show while Home Assistant is away).
+  const entityName = (id) => entities.find((e) => e.entity_id === id)?.name
+    || haConnection?.states?.[id]?.attributes?.friendly_name
+    || id;
 
   // The layout editor saves on its own; show what it saved.
   useEffect(() => {
@@ -114,6 +176,8 @@ const ModesSettings = () => {
     setSaving(true);
     try {
       await axios.patch(`${apiDeviceUrl}/settings`, { [DISPLAY_MODES_KEY]: next });
+      // Mode names are the helper's options: keep them in step.
+      if (next?.ha?.helper) await axios.post(`${apiDeviceUrl}/modes/ha/sync`, {}).catch(() => {});
       window.dispatchEvent(new Event(DEVICE_SETTINGS_UPDATED_EVENT));
       await load();
       flash('success', successText);
@@ -239,9 +303,22 @@ const ModesSettings = () => {
                   </Button>
                 </Stack>
                 <Stack direction="row" spacing={0.75} useFlexGap sx={{ flexWrap: 'wrap', mt: 0.5 }}>
-                  <Chip size="small" label={scheduleText(mode.schedule)} />
+                  {(mode.schedule || !(mode.alarm || mode.when)) && <Chip size="small" label={scheduleText(mode.schedule)} />}
                   {mode.startTab && <Chip size="small" label={t('admin:modes.startsOn', { tab: tabName(mode.startTab) })} />}
                   {mode.dim && <Chip size="small" label={t('admin:modes.dimChip')} />}
+                  {mode.alarm && (
+                    <Chip
+                      size="small"
+                      icon={<AlarmOutlined />}
+                      label={t('admin:modes.ha.alarmChip', { until: formatClock(Number(mode.alarm.until.slice(0, 2)) * 60 + Number(mode.alarm.until.slice(3)), i18n.language) })}
+                    />
+                  )}
+                  {mode.when && (
+                    <Chip size="small" icon={<ToggleOnOutlined />} label={t('admin:modes.ha.whenChip', { name: entityName(mode.when.entity), state: mode.when.state })} />
+                  )}
+                  {mode.onlyHome.length > 0 && (
+                    <Chip size="small" icon={<HomeOutlined />} label={t('admin:modes.ha.homeChip', { names: mode.onlyHome.map(entityName).join(', ') })} />
+                  )}
                 </Stack>
                 <Stack direction="row" spacing={0.75} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mt: 1 }}>
                   <Typography variant="body2" color="text.secondary">{t('admin:modes.layouts')}:</Typography>
@@ -273,6 +350,21 @@ const ModesSettings = () => {
           );
         })}
       </AdminGroup>
+
+      <ModesHaSettings
+        modes={stored}
+        connection={haConnection}
+        entities={entities}
+        entitiesLoading={entitiesLoading}
+        apiDeviceUrl={apiDeviceUrl}
+        onChanged={async (text) => {
+          await load();
+          window.dispatchEvent(new Event(DEVICE_SETTINGS_UPDATED_EVENT));
+          flash('success', text);
+        }}
+        onSaveHa={(patch, text) => persist({ ...stored, ha: { ...stored.ha, ...patch } }, text)}
+        onOpenConnections={onOpenConnections}
+      />
 
       <AdminGroup title={t('admin:modes.behaviorHeading')}>
         <AdminRow
@@ -348,13 +440,33 @@ const ModesSettings = () => {
           onDelete={deleteMode}
           scheduleText={scheduleText}
           locale={i18n.language}
+          haConnected={haConfigured}
+          entities={entities}
+          entitiesLoading={entitiesLoading}
+          helperOn={Boolean(stored.ha.helper)}
         />
       )}
     </>
   );
 };
 
-const ModeDialog = ({ mode, isNew, otherModes, tabs, tabName, saving, onCancel, onSave, onDelete, locale }) => {
+// One "turn on from Home Assistant" option in the mode dialog: a switch, and
+// its fields while it's on.
+const TriggerRow = ({ icon, title, hint, checked, onToggle, children }) => (
+  <Box sx={{ py: 1.5, '&:not(:last-of-type)': { borderBottom: '1px solid', borderColor: 'divider' } }}>
+    <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
+      <Box sx={{ color: checked ? 'primary.main' : 'text.secondary', display: 'flex' }}>{icon}</Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ fontWeight: 600 }}>{title}</Typography>
+        <Typography variant="body2" color="text.secondary">{hint}</Typography>
+      </Box>
+      <Switch checked={checked} onChange={(e) => onToggle(e.target.checked)} slotProps={{ input: { 'aria-label': title } }} />
+    </Stack>
+    {checked && <Box sx={{ mt: 1.5, pl: { xs: 0, sm: 4.5 } }}>{children}</Box>}
+  </Box>
+);
+
+const ModeDialog = ({ mode, isNew, otherModes, tabs, tabName, saving, onCancel, onSave, onDelete, locale, haConnected, entities, entitiesLoading, helperOn }) => {
   const { t } = useTranslation(['admin']);
   const [draft, setDraft] = useState(mode);
   const set = (patch) => setDraft((prev) => ({ ...prev, ...patch }));
@@ -369,7 +481,14 @@ const ModeDialog = ({ mode, isNew, otherModes, tabs, tabName, saving, onCancel, 
   const sameTimes = scheduled && draft.schedule.start === draft.schedule.end;
   const noDays = scheduled && draft.schedule.days.length === 0;
   const nameTaken = otherModes.some((item) => item.name.trim().toLowerCase() === draft.name.trim().toLowerCase());
-  const canSave = draft.name.trim() && !nameTaken && overlaps.length === 0 && !sameTimes && !noDays && !saving;
+  // Home Assistant options: switched on, each needs its entity.
+  const [homeOn, setHomeOn] = useState(mode.onlyHome.length > 0);
+  const alarmMissing = Boolean(draft.alarm) && !draft.alarm.entity;
+  const whenMissing = Boolean(draft.when) && (!draft.when.entity || !draft.when.state);
+  const homeMissing = homeOn && draft.onlyHome.length === 0;
+  const whenEntity = draft.when?.entity ? entities.find((e) => e.entity_id === draft.when.entity) : null;
+  const canSave = draft.name.trim() && !nameTaken && overlaps.length === 0 && !sameTimes && !noDays && !saving
+    && !alarmMissing && !whenMissing && !homeMissing;
 
   const overlapText = (hit) => {
     const other = otherModes.find((item) => item.id === (hit.a === draft.id ? hit.b : hit.a));
@@ -429,7 +548,9 @@ const ModeDialog = ({ mode, isNew, otherModes, tabs, tabName, saving, onCancel, 
               />
             </Stack>
             {!scheduled && (
-              <Typography variant="body2" color="text.secondary">{t('admin:modes.byHandHelp')}</Typography>
+              <Typography variant="body2" color="text.secondary">
+                {haConnected ? t('admin:modes.ha.byHandHelp') : t('admin:modes.byHandHelp')}
+              </Typography>
             )}
             {scheduled && (
               <Stack spacing={2} sx={{ mt: 1 }}>
@@ -473,6 +594,110 @@ const ModeDialog = ({ mode, isNew, otherModes, tabs, tabName, saving, onCancel, 
               </Stack>
             )}
           </Box>
+
+          {haConnected && (
+            <Box>
+              <Typography variant="subtitle2">{t('admin:modes.ha.triggersHeading')}</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                {helperOn ? t('admin:modes.ha.triggersHelpHelper', { name: draft.name.trim() || t('admin:modes.ha.thisMode') }) : t('admin:modes.ha.triggersHelp')}
+              </Typography>
+              <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, px: 2 }}>
+                <TriggerRow
+                  icon={<AlarmOutlined />}
+                  title={t('admin:modes.ha.alarm')}
+                  hint={t('admin:modes.ha.alarmHelp')}
+                  checked={Boolean(draft.alarm)}
+                  onToggle={(on) => set({
+                    alarm: on ? { entity: entitiesOfKind(entities, 'alarm')[0]?.entity_id || '', until: '09:00' } : null,
+                  })}
+                >
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                    <HaEntityPicker
+                      entities={entities}
+                      loading={entitiesLoading}
+                      kind="alarm"
+                      value={draft.alarm?.entity || null}
+                      onChange={(id) => set({ alarm: { ...draft.alarm, entity: id || '' } })}
+                      label={t('admin:modes.ha.alarmSensor')}
+                      helperText={t('admin:modes.ha.alarmSensorHelp')}
+                      error={alarmMissing}
+                      sx={{ flex: 2 }}
+                    />
+                    <TextField
+                      type="time"
+                      label={t('admin:modes.ha.until')}
+                      value={draft.alarm?.until || '09:00'}
+                      onChange={(e) => e.target.value && set({ alarm: { ...draft.alarm, until: e.target.value } })}
+                      slotProps={{ inputLabel: { shrink: true } }}
+                      sx={{ flex: 1 }}
+                    />
+                  </Stack>
+                </TriggerRow>
+
+                <TriggerRow
+                  icon={<ToggleOnOutlined />}
+                  title={t('admin:modes.ha.when')}
+                  hint={t('admin:modes.ha.whenHelp')}
+                  checked={Boolean(draft.when)}
+                  onToggle={(on) => set({ when: on ? { entity: '', state: '' } : null })}
+                >
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                    <HaEntityPicker
+                      entities={entities}
+                      loading={entitiesLoading}
+                      value={draft.when?.entity || null}
+                      onChange={(id) => {
+                        const entity = entities.find((e) => e.entity_id === id);
+                        const first = statesFor(entity)[0] || '';
+                        set({ when: { entity: id || '', state: id ? (draft.when?.entity === id ? draft.when.state : first) : '' } });
+                      }}
+                      label={t('admin:modes.ha.whenEntity')}
+                      error={whenMissing && !draft.when?.entity}
+                      sx={{ flex: 2 }}
+                    />
+                    <Autocomplete
+                      freeSolo
+                      options={statesFor(whenEntity)}
+                      value={draft.when?.state || ''}
+                      onInputChange={(_, value) => set({ when: { ...draft.when, state: value.slice(0, 100) } })}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label={t('admin:modes.ha.whenState')}
+                          helperText={whenEntity ? t('admin:modes.ha.whenNow', { state: whenEntity.state }) : ' '}
+                          error={whenMissing && Boolean(draft.when?.entity)}
+                        />
+                      )}
+                      sx={{ flex: 1 }}
+                    />
+                  </Stack>
+                </TriggerRow>
+
+                <TriggerRow
+                  icon={<HomeOutlined />}
+                  title={t('admin:modes.ha.home')}
+                  hint={t('admin:modes.ha.homeHelp')}
+                  checked={homeOn}
+                  onToggle={(on) => {
+                    setHomeOn(on);
+                    set({ onlyHome: on ? entitiesOfKind(entities, 'people').filter((e) => e.entity_id.startsWith('person.')).map((e) => e.entity_id) : [] });
+                  }}
+                >
+                  <HaEntityPicker
+                    multiple
+                    entities={entities}
+                    loading={entitiesLoading}
+                    kind="people"
+                    value={draft.onlyHome}
+                    onChange={(ids) => set({ onlyHome: ids })}
+                    label={t('admin:modes.ha.homeWho')}
+                    helperText={homeMissing ? t('admin:modes.ha.homePick') : t('admin:modes.ha.homeWhoHelp')}
+                    error={homeMissing}
+                  />
+                </TriggerRow>
+              </Box>
+            </Box>
+          )}
 
           <TextField
             select

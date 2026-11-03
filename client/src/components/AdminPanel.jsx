@@ -2868,7 +2868,9 @@ const AdminPanel = ({ setWidgetSettings, onPluginsChanged, onTabsChanged, onRequ
             )}
 
             {/* Modes: this display's own modes (utils/displayModes.js). */}
-            {location.section === 'modes' && <ModesSettings />}
+            {location.section === 'modes' && (
+              <ModesSettings onOpenConnections={() => navigate({ tab: 'system', section: 'connections' })} />
+            )}
 
             {location.section === 'screensaver' && (
               <>

@@ -242,6 +242,8 @@ const householdChanges = createHouseholdChanges({
 const haPanelRules = require('./services/haPanels');
 const { HaLive } = require('./services/haLive');
 const { registerHaPanelRoutes, lazyDb } = require('./routes/haPanels');
+const { registerDisplayModesHaRoutes } = require('./routes/displayModesHa');
+const displayModesHa = require('./services/displayModesHa');
 const { registerRoutineRoutes } = require('./routes/routines');
 const { registerNotificationRoutes } = require('./routes/notifications');
 const { registerNtfyRoutes } = require('./routes/ntfy');
@@ -1234,6 +1236,15 @@ const haPanels = registerHaPanelRoutes(fastify, {
   installPluginRow,
   // A panel resized where it is placed: every display reloads its layouts.
   householdChanged: () => householdChanges.bump('settings'),
+  // Displays' modes read Home Assistant entities too: keep those live.
+  extraWatched: () => {
+    const ids = new Set();
+    for (const row of db.prepare('SELECT device_settings_json FROM devices').all()) {
+      const settings = parseJsonObject(row.device_settings_json, {});
+      displayModesHa.entityRefs(settings.displayModes).forEach((id) => ids.add(id));
+    }
+    return [...ids];
+  },
   // A plugin's household setting: play_url checks addresses against the
   // media server one of them names (manifest homeAssistant.playUrlsFrom).
   readPluginSetting: (pluginId, key) => {
@@ -1241,6 +1252,27 @@ const haPanels = registerHaPanelRoutes(fastify, {
     return typeof value === 'string' ? value : null;
   },
 });
+// Display modes and Home Assistant (routes/displayModesHa.js): a display's
+// mode helper, its current-mode sensor, and the entities its modes read.
+registerDisplayModesHaRoutes(fastify, {
+  db: haDb,
+  live: haLive,
+  ha: homeAssistant,
+  demoMode: DEMO_MODE,
+  readDevice: (deviceName) => {
+    const row = db.prepare('SELECT device_settings_json FROM devices WHERE name = ?').get(deviceName);
+    return row ? parseJsonObject(row.device_settings_json, {}) : null;
+  },
+  writeDevice: (deviceName, patch) => {
+    ensureDeviceExists(deviceName);
+    const row = db.prepare('SELECT device_settings_json FROM devices WHERE name = ?').get(deviceName);
+    const merged = { ...parseJsonObject(row?.device_settings_json, {}), ...patch };
+    db.prepare('UPDATE devices SET device_settings_json = ?, updateTime = CURRENT_TIMESTAMP WHERE name = ?').run(JSON.stringify(merged), deviceName);
+    return merged;
+  },
+  refreshWatched: () => haPanels.refreshWatched(),
+});
+
 
 // Routines: steps a child ticks off, each routine one ordinary chore
 // (routes/routines.js). Chore completion is shared with the chore routes.
@@ -2893,6 +2925,8 @@ const upsertDeviceSettings = async (request, reply) => {
       JSON.stringify(merged),
       deviceName
     );
+    // A display's modes may read other Home Assistant entities now.
+    if (Object.prototype.hasOwnProperty.call(incoming, 'displayModes')) haPanels.refreshWatched();
 
     return merged;
   } catch (error) {

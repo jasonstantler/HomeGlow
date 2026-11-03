@@ -250,6 +250,12 @@ export function setDimmingPaused(paused) {
   }
 }
 
+// Wake the screen as if touched (someone arrived home, utils/displayModes.js).
+// A held dim dims again after its idle time, like after a touch.
+export function wakeDisplay() {
+  poke();
+}
+
 // Hold the screen dimmed at `level` (0-1) while a display mode asks, or
 // release it with null. Dims at once, unless the Admin Panel is open.
 export function setDimmingHold(level) {

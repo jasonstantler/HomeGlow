@@ -119,6 +119,30 @@ export function normalizeMode(raw) {
     dim: raw.dim === true,
     layouts: normalizeLayouts(raw.layouts),
     hidden: normalizeHidden(raw.hidden),
+    // Home Assistant: turn on when a phone's alarm goes off (until a time),
+    // or when an entity is in a state; only while someone is home.
+    alarm: isEntityId(raw.alarm?.entity) && parseTime(raw.alarm?.until) != null
+      ? { entity: raw.alarm.entity, until: raw.alarm.until }
+      : null,
+    when: isEntityId(raw.when?.entity) && typeof raw.when?.state === 'string' && raw.when.state
+      ? { entity: raw.when.entity, state: raw.when.state.slice(0, 100) }
+      : null,
+    onlyHome: Array.isArray(raw.onlyHome) ? [...new Set(raw.onlyHome.filter(isEntityId))].slice(0, 20) : [],
+  };
+}
+
+const ENTITY_ID = /^[a-z_][a-z0-9_]*\.[a-z0-9_]+$/;
+export const isEntityId = (value) => typeof value === 'string' && ENTITY_ID.test(value);
+
+/** A display's Home Assistant settings (the server's services/displayModesHa.js). */
+export function normalizeHa(raw) {
+  const ha = raw && typeof raw === 'object' ? raw : {};
+  return {
+    helper: isEntityId(ha.helper) && ha.helper.startsWith('input_select.') ? ha.helper : null,
+    helperId: typeof ha.helperId === 'string' ? ha.helperId : null,
+    title: typeof ha.title === 'string' ? ha.title : null,
+    report: ha.report !== false,
+    wake: Array.isArray(ha.wake) ? [...new Set(ha.wake.filter(isEntityId))].slice(0, 20) : [],
   };
 }
 
@@ -134,6 +158,7 @@ export function normalizeModesSettings(raw) {
     fade: source.fade !== false,
     touchWaitSeconds: clampInt(source.touchWaitSeconds, 0, 600, DEFAULT_MODES_SETTINGS.touchWaitSeconds),
     returnMinutes: clampInt(source.returnMinutes, 0, 120, DEFAULT_MODES_SETTINGS.returnMinutes),
+    ha: normalizeHa(source.ha),
   };
 }
 
@@ -379,4 +404,106 @@ export function hideInDraft(draft, name, onTab) {
   const { [name]: _removed, ...saved } = draft.saved;
   const hidden = onTab && !draft.hidden.includes(name) ? [...draft.hidden, name] : draft.hidden;
   return { saved, hidden };
+}
+
+
+// ---- Home Assistant ------------------------------------------------------
+// The mode helper's options: Automatic hands the choice back to schedules
+// and triggers, Normal is the usual layout, then each mode by name. Fixed
+// English, because Home Assistant automations name them.
+export const HELPER_AUTOMATIC = 'Automatic';
+export const HELPER_NORMAL = 'Normal';
+
+export const helperOptionFor = (modes, modeId) => (modeId == null
+  ? HELPER_NORMAL
+  : (modes.find((mode) => mode.id === modeId)?.name ?? HELPER_NORMAL));
+
+/** The mode a helper option names: a mode id, null (Normal), or undefined. */
+export function modeForOption(modes, option) {
+  if (option === HELPER_NORMAL) return null;
+  const mode = modes.find((item) => item.name === option);
+  return mode ? mode.id : undefined;
+}
+
+/** Is a person, tracker or zone at home? Zones count the people in them. */
+export function isHome(state) {
+  if (!state) return false;
+  const value = String(state.state ?? '');
+  if (/^\d+$/.test(value)) return Number(value) > 0;
+  return value === 'home';
+}
+
+/**
+ * When an alarm that went off keeps its mode on: [start, end) in ms, from the
+ * alarm until the next `until` time after it (in the household zone), at most
+ * 12 hours. Null when no alarm has gone off.
+ */
+export function alarmWindow(rangIso, until, timeZone) {
+  const start = Date.parse(rangIso || '');
+  const untilMinutes = parseTime(until);
+  if (!Number.isFinite(start) || untilMinutes == null) return null;
+  const startMinute = minuteOfWeek(new Date(start), timeZone) % MINUTES_PER_DAY;
+  let wait = untilMinutes - startMinute;
+  if (wait <= 0) wait += MINUTES_PER_DAY;
+  const end = start + Math.min(wait, 12 * 60) * 60000;
+  return [start, end];
+}
+
+/**
+ * Remember when phones' alarms went off. A next-alarm sensor moves on to the
+ * next alarm as soon as one rings, so the time it showed before is kept once
+ * it has passed. `memory` is { seen: {entity: iso}, rang: {entity: iso} }.
+ */
+export function rememberAlarms(memory, states, nowMs) {
+  const seen = { ...(memory?.seen || {}) };
+  const rang = { ...(memory?.rang || {}) };
+  for (const [entity, state] of Object.entries(states || {})) {
+    const value = state?.state;
+    const at = Date.parse(value || '');
+    if (!Number.isFinite(at)) continue;
+    const before = Date.parse(seen[entity] || '');
+    if (Number.isFinite(before) && before !== at && before <= nowMs + 60000) rang[entity] = seen[entity];
+    if (at <= nowMs) rang[entity] = value;
+    seen[entity] = value;
+  }
+  return { seen, rang };
+}
+
+/**
+ * Which mode this display would show on its own: a mode whose alarm or entity
+ * trigger is on beats a scheduled one; either needs someone home when the
+ * mode asks for it. Without Home Assistant (`ha` null) its triggers are off
+ * and its conditions pass, so schedules carry on.
+ * Returns { id, source } (id null for the normal layout).
+ */
+export function automaticModeAt({ modes, now = new Date(), timeZone, ha = null, rang = {} }) {
+  const list = Array.isArray(modes) ? modes : [];
+  const states = ha?.states || {};
+  const nowMs = now.getTime();
+  const someoneHome = (mode) => !ha || mode.onlyHome.length === 0 || mode.onlyHome.some((id) => isHome(states[id]));
+  if (ha) {
+    for (const mode of list) {
+      if (!someoneHome(mode)) continue;
+      if (mode.alarm) {
+        const window = alarmWindow(rang[mode.alarm.entity], mode.alarm.until, timeZone);
+        if (window && nowMs >= window[0] && nowMs < window[1]) return { id: mode.id, source: 'alarm' };
+      }
+      if (mode.when && states[mode.when.entity]?.state === mode.when.state) return { id: mode.id, source: 'entity' };
+    }
+  }
+  const scheduled = list.find((mode) => mode.schedule && someoneHome(mode) && isScheduleActive(mode.schedule, now, timeZone));
+  return scheduled ? { id: scheduled.id, source: 'schedule' } : { id: null, source: 'none' };
+}
+
+/**
+ * What Home Assistant's helper asks for, or null when it doesn't (Automatic,
+ * an option no mode has, or the wall's own choice echoed back while that pin
+ * holds). { modeId } with modeId null for Normal.
+ */
+export function helperCommand({ modes, option, pin }) {
+  if (!option || option === HELPER_AUTOMATIC) return null;
+  const modeId = modeForOption(modes, option);
+  if (modeId === undefined) return null;
+  if (pin && helperOptionFor(modes, pin.modeId) === option) return null;
+  return { modeId };
 }
