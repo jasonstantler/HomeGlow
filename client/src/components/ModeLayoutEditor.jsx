@@ -15,7 +15,9 @@ import {
 import { useTranslation } from 'react-i18next';
 import WidgetContainer from './WidgetContainer.jsx';
 import { TabIcon } from './TabBar.jsx';
-import useCarryToTab from '../hooks/useCarryToTab.jsx';
+import useCarryToTab, { dockTargetFrom, slideIn } from '../hooks/useCarryToTab.jsx';
+import { dropTargetSx, pendingTabSx } from './TabBar.jsx';
+import { attachTwoFingerSwipe, swipeTargetTab } from '../utils/twoFingerSwipe.js';
 import {
   hideInDraft,
   showInDraft,
@@ -46,8 +48,9 @@ const SETTLE_MS = 650;
  * - sizeOf(name): a widget's usual size, { w, h }
  * - buildWidgets(tab, saved): the grid's widgets for a draft's layout
  * - onSave(drafts): { tab: { saved, hidden } }; onClose()
+ * - swipe: two fingers swipe between tabs, as on this display's dashboard
  */
-const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, buildWidgets, onSave, onClose }) => {
+const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, buildWidgets, onSave, onClose, swipe = false }) => {
   const { t } = useTranslation(['common', 'admin']);
   const labelOf = (widget) => widget.label || t(`admin:screensaver.expand.widgetNames.${widget.name}`, { defaultValue: widget.name });
   const [tab, setTab] = useState(startTab || tabs[0]?.number || 1);
@@ -78,13 +81,10 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
 
   // ---- The dock: tap a tab to edit it; drag a widget onto a tab, or hold it
   // over a tab or at the side of the screen to open that tab with it in hand.
-  const editorTabAt = (x, y) => {
-    const el = [...document.querySelectorAll('[data-editor-tab]')].find((item) => {
-      const r = item.getBoundingClientRect();
-      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-    });
-    return el ? Number(el.getAttribute('data-editor-tab')) : null;
-  };
+  // Generous: anywhere near the dock picks the closest tab.
+  const editorTabAt = dockTargetFrom([
+    { selector: '[data-editor-tab]', value: (el) => Number(el.getAttribute('data-editor-tab')) },
+  ]);
   const carry = useCarryToTab({
     tabs,
     activeTab: tab,
@@ -100,6 +100,28 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
     },
   });
   const dropTab = carry.hoverTarget;
+
+  // Tap a tab in the dock, or swipe with two fingers: the page slides over.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  const goToTab = (next) => {
+    if (next == null || next === tabRef.current) return;
+    const from = tabs.findIndex((item) => item.number === tabRef.current);
+    const to = tabs.findIndex((item) => item.number === next);
+    setTab(next);
+    requestAnimationFrame(() => requestAnimationFrame(() => slideIn(contentRef.current, to > from ? 1 : -1)));
+  };
+  const goToTabRef = useRef(goToTab);
+  goToTabRef.current = goToTab;
+  useEffect(() => {
+    if (!swipe) return undefined;
+    return attachTwoFingerSwipe({
+      target: window,
+      onSwipe: (direction) => goToTabRef.current(swipeTargetTab(tabs, tabRef.current, direction)),
+      // Not while a menu is open over the editor.
+      ignore: () => Boolean(document.querySelector('.MuiMenu-root')),
+    });
+  }, [swipe, tabs]);
 
   const carriedName = carry.carrying?.name || null;
   const grid = useMemo(() => {
@@ -316,9 +338,15 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
           zIndex: 2,
           display: 'flex',
           alignItems: 'center',
-          gap: 0.5,
-          px: 2,
-          py: 1,
+          // Lifts and spreads out while a widget is dragged, like the
+          // dashboard's dock.
+          gap: carry.dragging ? 2 : 0.5,
+          px: carry.dragging ? 3 : 2,
+          py: carry.dragging ? 1.5 : 1,
+          scale: carry.dragging ? '1.12' : '1',
+          translate: carry.dragging ? '0 -8px' : '0 0',
+          transformOrigin: 'bottom center',
+          transition: 'gap 200ms ease, padding 200ms ease, scale 200ms ease, translate 200ms ease',
           borderRadius: 'var(--hg-radius-2xl)',
           backgroundColor: 'var(--dock-bg)',
           border: '1px solid var(--dock-border)',
@@ -329,6 +357,7 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
         {tabs.map((item) => {
           const active = item.number === tab;
           const dropping = dropTab === item.number && !active;
+          const waiting = carry.pending === item.number;
           const hasLayout = Boolean(drafts[item.number] || mode.layouts?.[item.number]);
           return (
             <Box
@@ -339,7 +368,7 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
               aria-selected={active}
               aria-label={item.label || t('modes.editor.tabNumber', { number: item.number })}
               data-editor-tab={item.number}
-              onClick={() => setTab(item.number)}
+              onClick={() => goToTab(item.number)}
               sx={{
                 width: 44,
                 height: 44,
@@ -354,11 +383,8 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
                 backgroundColor: active ? 'var(--dock-active-bg)' : 'transparent',
                 backgroundImage: active ? 'var(--dock-active-image)' : 'none',
                 border: active ? '1.5px solid var(--dock-active-border)' : '1.5px solid transparent',
-                ...(dropping && {
-                  transform: 'scale(1.15)',
-                  border: '1.5px solid var(--accent)',
-                  backgroundColor: 'rgba(var(--accent-rgb), 0.18)',
-                }),
+                ...(dropping && dropTargetSx),
+                ...(waiting && pendingTabSx()),
               }}
             >
               <TabIcon name={item.icon} size={22} color={active ? 'var(--dock-active-icon)' : 'var(--dock-icon)'} />
@@ -392,7 +418,7 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
           </MenuItem>
         ))}
       </Menu>
-      {carry.ghost}
+      {carry.overlay}
     </Dialog>
   );
 };

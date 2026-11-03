@@ -63,7 +63,7 @@ import { setHouseholdChangesMode, subscribeHouseholdChanges } from './utils/hous
 import { updateDisplayDimming, setDimmingPaused, setDimmingHold } from './utils/displayDim.js';
 import useDisplayModes from './hooks/useDisplayModes.js';
 import ModeBadge from './components/ModeBadge.jsx';
-import useCarryToTab from './hooks/useCarryToTab.jsx';
+import useCarryToTab, { dockTargetFrom } from './hooks/useCarryToTab.jsx';
 import {
   MODE_DIM_LEVEL,
   firstOpenSpot,
@@ -1004,6 +1004,8 @@ const App = () => {
   const screensaverActiveRef = useRef(false);
   const screensaverSettingsRef = useRef(screensaverSettings);
   const showAdminPanelRef = useRef(showAdminPanel);
+  // The mode layout editor has its own two-finger swipe.
+  const layoutEditorOpenRef = useRef(false);
   const tabsRef = useRef(tabs);
 
   useEffect(() => { screensaverSettingsRef.current = screensaverSettings; }, [screensaverSettings]);
@@ -1130,6 +1132,7 @@ const App = () => {
       // Not while Admin or the screensaver is up, and not in a dialog: a swipe
       // there would change the tab behind it.
       ignore: (event) => showAdminPanelRef.current
+        || layoutEditorOpenRef.current
         || screensaverActiveRef.current
         || !!event?.target?.closest?.('.MuiModal-root'),
     });
@@ -1327,17 +1330,11 @@ const App = () => {
   // dialog) and the widget moves into it.
   const pendingTabMoveRef = useRef(null);
 
-  const dockTargetAt = (x, y) => {
-    const inside = (el) => {
-      const r = el.getBoundingClientRect();
-      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-    };
-    const tabEl = [...document.querySelectorAll('[data-dock-tab]')].find(inside);
-    if (tabEl) return Number(tabEl.getAttribute('data-dock-tab'));
-    const addEl = document.querySelector('[data-dock-add]');
-    if (addEl && inside(addEl)) return 'add';
-    return null;
-  };
+  // Generous: anywhere near the dock picks the closest tab.
+  const dockTargetAt = dockTargetFrom([
+    { selector: '[data-dock-tab]', value: (el) => Number(el.getAttribute('data-dock-tab')) },
+    { selector: '[data-dock-add]', value: () => 'add' },
+  ]);
 
   // `cell` is where on the tab ({x,y,w,h}), or null for the first open spot.
   const moveWidgetToTab = async (name, fromTab, toTab, cell = null) => {
@@ -1630,6 +1627,7 @@ const App = () => {
   // ---- The mode layout editor (components/ModeLayoutEditor.jsx) ----
   // Opened from Admin → Modes or the mode label: { modeId, tab }.
   const [layoutEditor, setLayoutEditor] = useState(null);
+  layoutEditorOpenRef.current = Boolean(layoutEditor);
   useEffect(() => {
     const open = (event) => {
       const { modeId, tab } = event.detail || {};
@@ -1820,6 +1818,7 @@ const App = () => {
               buildWidgets={(tabNumber, saved) => makeWidgetList(tabNumber, (name) => Boolean(saved[name]), (name) => saved[name] || null)}
               onSave={saveEditorDrafts}
               onClose={() => setLayoutEditor(null)}
+              swipe={swipeBetweenTabs}
             />
           </Suspense>
         )}
@@ -1835,7 +1834,7 @@ const App = () => {
         {isMobile && mobileWidgets.length > 0 && (
           <MobileDashboard widgets={mobileWidgets} />
         )}
-        {carry.ghost}
+        {carry.overlay}
         {!isMobile && widgets.length > 0 && !layoutEditor && (
           <Box ref={dashboardGridRef}>
           <WidgetContainer
@@ -1942,6 +1941,8 @@ const App = () => {
       {!(isMobile && showAdminPanel) && (
       <TabBar
         dropTarget={carry.hoverTarget}
+        pendingTab={carry.pending}
+        dragging={carry.dragging}
         tabs={tabs}
         activeTab={activeTab}
         onTabChange={handleTabChange}
@@ -1954,7 +1955,7 @@ const App = () => {
         onRefresh={handlePageRefresh}
         // A widget filling the whole page covers the dock too.
         // The mode layout editor has its own dock.
-        hidden={dockHidden || expandedWidgetSize === 'full' || Boolean(layoutEditor)}
+        hidden={!carry.dragging && (dockHidden || expandedWidgetSize === 'full' || Boolean(layoutEditor))}
         underDialogs={showAdminPanel}
         theme={displayTheme}
         themeMode={themeMode}

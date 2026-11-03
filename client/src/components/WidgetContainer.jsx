@@ -916,12 +916,22 @@ const WidgetContainer = ({
         '& .react-grid-item.cssTransforms': {
           transitionProperty: (selectedWidget || isLockTransitioning) ? 'none !important' : 'transform, width, height',
         },
+        // Where a dragged widget will land: a dashed outline, the same as
+        // when it's carried to another tab (hooks/useCarryToTab.jsx).
         '& .react-grid-item.react-grid-placeholder': {
-          background: 'var(--accent)',
-          opacity: 0.2,
-          borderRadius: 'var(--hg-radius-md)',
+          background: 'rgba(var(--accent-rgb), 0.10)',
+          border: '2px dashed var(--accent)',
+          boxSizing: 'border-box',
+          opacity: 1,
+          borderRadius: 'var(--hg-frame-radius, var(--hg-radius-md))',
           zIndex: 2,
           transition: 'all 100ms ease',
+        },
+        // The widget being dragged is lifted off the page.
+        '& .react-grid-item.react-draggable-dragging > .widget-wrapper': {
+          scale: '1.02',
+          boxShadow: '0 24px 64px var(--hg-black-30), 0 6px 18px var(--hg-black-20)',
+          transition: 'scale 150ms ease, box-shadow 150ms ease',
         },
       }}
     >
