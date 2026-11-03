@@ -87,7 +87,7 @@
     "editLayoutHelp": "Arrange this mode on a preview",
     "editor": {
       "title": "{{name}} layout",
-      "help": "Drag and resize widgets for this mode. Drop one on a tab below to move it there, or press and hold one for options. Your normal dashboard isn't changed.",
+      "help": "Drag and resize widgets for this mode. Drop one on a tab below to move it there, or hold it over a tab or at the side of the screen to open that tab and place it. Press and hold a widget for options. Your normal dashboard isn't changed.",
       "tabNumber": "Tab {{number}}",
       "widgets": "Widgets ({{count}})",
       "fromOtherTab": "From another tab",

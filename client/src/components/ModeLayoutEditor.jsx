@@ -15,6 +15,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import WidgetContainer from './WidgetContainer.jsx';
 import { TabIcon } from './TabBar.jsx';
+import useCarryToTab from '../hooks/useCarryToTab.jsx';
 import {
   hideInDraft,
   showInDraft,
@@ -75,7 +76,37 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
     setDrafts((prev) => (prev[tab] ? prev : { ...prev, [tab]: startDraft(mode, tab, tabWidgets(tab)) }));
   }, [tab, mode, tabWidgets]);
 
-  const grid = useMemo(() => buildWidgets(tab, draft.saved), [buildWidgets, tab, draft.saved]);
+  // ---- The dock: tap a tab to edit it; drag a widget onto a tab, or hold it
+  // over a tab or at the side of the screen to open that tab with it in hand.
+  const editorTabAt = (x, y) => {
+    const el = [...document.querySelectorAll('[data-editor-tab]')].find((item) => {
+      const r = item.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    });
+    return el ? Number(el.getAttribute('data-editor-tab')) : null;
+  };
+  const carry = useCarryToTab({
+    tabs,
+    activeTab: tab,
+    setTab,
+    dockTargetAt: editorTabAt,
+    sizeOf: (name) => draft.saved[name] || sizeOf(name),
+    placedOn: () => draft.saved,
+    gridRoot: () => contentRef.current,
+    scale: PREVIEW_SCALE,
+    onDrop: ({ name, fromTab, toTab, cell }) => {
+      moveToTab(name, fromTab, toTab, cell);
+      setTab(toTab);
+    },
+  });
+  const dropTab = carry.hoverTarget;
+
+  const carriedName = carry.carrying?.name || null;
+  const grid = useMemo(() => {
+    if (!carriedName || !draft.saved[carriedName]) return buildWidgets(tab, draft.saved);
+    const { [carriedName]: _carried, ...rest } = draft.saved;
+    return buildWidgets(tab, rest);
+  }, [buildWidgets, tab, draft.saved, carriedName]);
 
   const saveFromGrid = (layoutRows, tabNumber) => {
     setDrafts((prev) => {
@@ -113,7 +144,9 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
   };
   const onPressStart = (event) => {
     const el = event.target?.closest?.('[data-widget-name]');
-    if (!el) return;
+    // A selected widget is for dragging: holding it before moving mustn't
+    // open the menu.
+    if (!el || event.target.closest('.drag-handle')) return;
     const name = el.getAttribute('data-widget-name');
     const start = { x: event.clientX, y: event.clientY };
     cancelPress();
@@ -132,42 +165,23 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
   };
   useEffect(() => cancelPress, []);
 
-  const moveToTab = (name, target) => {
-    const size = draft.saved[name] ? { w: draft.saved[name].w, h: draft.saved[name].h } : sizeOf(name);
+  // Move a widget from one tab to another in this mode; `cell` is where on
+  // the tab ({x,y,w,h}), or null for the first open spot.
+  const moveToTab = (name, fromTab, toTab, cell = null) => {
     setDrafts((prev) => {
-      const here = prev[tab] || startDraft(mode, tab, tabWidgets(tab));
-      const there = prev[target] || startDraft(mode, target, tabWidgets(target));
-      return {
-        ...prev,
-        [tab]: hideInDraft(here, name, onTabNames.has(name)),
-        [target]: showInDraft(there, name, size, rows),
-      };
+      const here = prev[fromTab] || startDraft(mode, fromTab, tabWidgets(fromTab));
+      const item = here.saved[name];
+      const size = item ? { w: item.w, h: item.h } : sizeOf(name);
+      if (fromTab === toTab) {
+        return cell ? { ...prev, [toTab]: { ...here, saved: { ...here.saved, [name]: cell } } } : prev;
+      }
+      const isOnTab = tabWidgets(fromTab).some((widget) => widget.name === name);
+      const there = showInDraft(prev[toTab] || startDraft(mode, toTab, tabWidgets(toTab)), name, size, rows);
+      if (cell) there.saved = { ...there.saved, [name]: cell };
+      return { ...prev, [fromTab]: hideInDraft(here, name, isOnTab), [toTab]: there };
     });
   };
 
-  // ---- The dock: tap a tab to edit it, or drop a dragged widget on it ----
-  const [dropTab, setDropTab] = useState(null);
-  const editorTabAt = (x, y) => {
-    const el = [...document.querySelectorAll('[data-editor-tab]')].find((item) => {
-      const r = item.getBoundingClientRect();
-      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-    });
-    return el ? Number(el.getAttribute('data-editor-tab')) : null;
-  };
-  const onWidgetDrag = (name, x, y) => {
-    const target = editorTabAt(x, y);
-    setDropTab((current) => (current === target ? current : target));
-  };
-  const onWidgetDragStop = (name, x, y) => {
-    const target = editorTabAt(x, y);
-    setDropTab(null);
-    if (target != null && target !== tab && name) {
-      moveToTab(name, target);
-      setTab(target);
-      return true;
-    }
-    return false;
-  };
 
   const menuWidget = widgetMenu && widgets.find((widget) => widget.name === widgetMenu.name);
   const closeWidgetMenu = () => setWidgetMenu(null);
@@ -273,15 +287,15 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
           >
             {grid.length > 0 ? (
               <WidgetContainer
-                key={tab}
+                key={`${tab}-${carry.carryKey}`}
                 widgets={grid}
                 locked={false}
                 activeTab={tab}
                 activeTabId={tabs.find((item) => item.number === tab)?.id ?? tab}
                 scale={PREVIEW_SCALE}
                 onSaveLayouts={saveFromGrid}
-                onWidgetDrag={onWidgetDrag}
-                onWidgetDragStop={onWidgetDragStop}
+                onWidgetDrag={carry.onDrag}
+                onWidgetDragStop={carry.onDragStop}
               />
             ) : (
               <Typography sx={{ p: 6, textAlign: 'center', color: 'var(--text-secondary)' }}>
@@ -373,11 +387,12 @@ const ModeLayoutEditor = ({ mode, tabs, startTab, widgets, tabWidgets, sizeOf, b
         {tabs.length > 1 && <Divider />}
         {tabs.length > 1 && <ListSubheader sx={{ lineHeight: '28px' }}>{t('modes.editor.moveTo')}</ListSubheader>}
         {tabs.filter((item) => item.number !== tab).map((item) => (
-          <MenuItem key={item.number} onClick={pick((name) => moveToTab(name, item.number))}>
+          <MenuItem key={item.number} onClick={pick((name) => moveToTab(name, tab, item.number))}>
             <ListItemText inset primary={item.label || t('modes.editor.tabNumber', { number: item.number })} />
           </MenuItem>
         ))}
       </Menu>
+      {carry.ghost}
     </Dialog>
   );
 };

@@ -63,6 +63,7 @@ import { setHouseholdChangesMode, subscribeHouseholdChanges } from './utils/hous
 import { updateDisplayDimming, setDimmingPaused, setDimmingHold } from './utils/displayDim.js';
 import useDisplayModes from './hooks/useDisplayModes.js';
 import ModeBadge from './components/ModeBadge.jsx';
+import useCarryToTab from './hooks/useCarryToTab.jsx';
 import {
   MODE_DIM_LEVEL,
   firstOpenSpot,
@@ -1319,10 +1320,11 @@ const App = () => {
     }
   };
 
-  // ---- Dropping a dragged widget on the dock (Move/Resize) ----
-  // Over a tab: the widget moves to that tab. Over +: a new tab is made (the
-  // usual new-tab dialog) and the widget moves into it.
-  const [dockDropTarget, setDockDropTarget] = useState(null);
+  // ---- Moving a dragged widget to another tab (Move/Resize) ----
+  // Let go over a tab in the dock and it moves there; hold it over a tab or
+  // at the side of the screen and that tab opens with it in hand
+  // (hooks/useCarryToTab.jsx). Over +: a new tab is made (the usual new-tab
+  // dialog) and the widget moves into it.
   const pendingTabMoveRef = useRef(null);
 
   const dockTargetAt = (x, y) => {
@@ -1337,19 +1339,26 @@ const App = () => {
     return null;
   };
 
-  const moveWidgetToTab = async (name, fromTab, toTab) => {
-    if (!name || fromTab === toTab) return;
+  // `cell` is where on the tab ({x,y,w,h}), or null for the first open spot.
+  const moveWidgetToTab = async (name, fromTab, toTab, cell = null) => {
+    if (!name || (fromTab === toTab && !cell)) return;
     // A mode with its own layout here: the move is the mode's, so the usual
     // tabs stay as they are.
-    if (shownMode?.layouts?.[fromTab]) {
+    if (shownMode?.layouts?.[fromTab] || shownMode?.layouts?.[toTab]) {
       const here = startDraft(shownMode, fromTab, tabWidgetsFor(fromTab));
       const item = here.saved[name];
-      const there = startDraft(shownMode, toTab, tabWidgetsFor(toTab));
+      const size = item ? { w: item.w, h: item.h } : widgetSizeOf(name);
       try {
-        await displayModes.saveModeTabs(shownMode.id, {
-          [fromTab]: hideInDraft(here, name, isWidgetAssignedToTab(name, fromTab)),
-          [toTab]: showInDraft(there, name, item ? { w: item.w, h: item.h } : widgetSizeOf(name)),
-        });
+        if (fromTab === toTab) {
+          await displayModes.saveModeTabs(shownMode.id, { [toTab]: { ...here, saved: { ...here.saved, [name]: cell } } });
+        } else {
+          const there = showInDraft(startDraft(shownMode, toTab, tabWidgetsFor(toTab)), name, size);
+          if (cell) there.saved = { ...there.saved, [name]: cell };
+          await displayModes.saveModeTabs(shownMode.id, {
+            [fromTab]: hideInDraft(here, name, isWidgetAssignedToTab(name, fromTab)),
+            [toTab]: there,
+          });
+        }
         setActiveTab(toTab);
       } catch (error) {
         console.error('Error moving the widget in this mode:', error);
@@ -1357,46 +1366,28 @@ const App = () => {
       return;
     }
     try {
-      if (!isWidgetAssignedToTab(name, toTab)) {
+      if (fromTab !== toTab && !isWidgetAssignedToTab(name, toTab)) {
         await axios.post(`${API_DEVICE_URL}/widget-assignments`, { widget_name: name, tabNumber: toTab });
       }
-      // Its size comes along, in the first open spot on the new tab.
+      // Where it was let go, else the first open spot, at the size it had.
       const size = getWidgetLayoutForTab(name, fromTab) || { w: 6, h: 4 };
       const taken = Object.keys(widgetAssignments)
         .filter((other) => other !== name)
         .map((other) => getWidgetLayoutForTab(other, toTab))
         .filter(Boolean);
-      const spot = firstOpenSpot({ w: size.w, h: size.h }, taken);
+      const spot = cell || firstOpenSpot({ w: size.w, h: size.h }, taken);
       await axios.patch(`${API_DEVICE_URL}/widget-assignments/layout/bulk`, {
         layouts: [{ widget_name: name, tabNumber: toTab, layout_x: spot.x, layout_y: spot.y, layout_w: spot.w, layout_h: spot.h }],
       });
-      await axios.delete(`${API_DEVICE_URL}/widget-assignments/${encodeURIComponent(`${fromTab}::${name}`)}`);
+      if (fromTab !== toTab) {
+        await axios.delete(`${API_DEVICE_URL}/widget-assignments/${encodeURIComponent(`${fromTab}::${name}`)}`);
+      }
       await fetchWidgetAssignments();
       setActiveTab(toTab);
     } catch (error) {
       console.error('Error moving the widget to another tab:', error);
       await fetchWidgetAssignments();
     }
-  };
-
-  const handleWidgetDrag = (name, x, y) => {
-    const target = dockTargetAt(x, y);
-    setDockDropTarget((current) => (current === target ? current : target));
-  };
-
-  const handleWidgetDragStop = (name, x, y) => {
-    const target = dockTargetAt(x, y);
-    setDockDropTarget(null);
-    if (target === 'add') {
-      pendingTabMoveRef.current = { name, fromTab: activeTab };
-      setShowTabIconModal(true);
-      return false;
-    }
-    if (Number.isInteger(target) && target !== activeTab) {
-      void moveWidgetToTab(name, activeTab, target);
-      return true;
-    }
-    return false;
   };
 
   const handleDeleteTab = async (tabNumber) => {
@@ -1672,6 +1663,31 @@ const App = () => {
     }
     return { w: 6, h: 4 };
   };
+  const dashboardGridRef = useRef(null);
+  const carry = useCarryToTab({
+    tabs,
+    activeTab,
+    setTab: setActiveTab,
+    dockTargetAt,
+    sizeOf: (name) => getWidgetLayoutForTab(name, activeTab) || modeTabLayout?.placed?.[name] || widgetSizeOf(name),
+    placedOn: () => {
+      if (modeTabLayout) return modeTabLayout.placed;
+      const placed = {};
+      widgetsOnActiveTab.forEach(({ name }) => {
+        const item = getWidgetLayoutForTab(name, activeTab);
+        if (item) placed[name] = item;
+      });
+      return placed;
+    },
+    gridRoot: () => dashboardGridRef.current,
+    onDrop: ({ name, fromTab, toTab, cell }) => { void moveWidgetToTab(name, fromTab, toTab, cell); },
+    onDropAdd: ({ name, fromTab }) => {
+      pendingTabMoveRef.current = { name, fromTab };
+      setShowTabIconModal(true);
+    },
+  });
+  const carriedName = carry.carrying?.name || null;
+
   const saveEditorDrafts = async (drafts) => {
     await displayModes.saveModeTabs(layoutEditor.modeId, drafts);
     window.dispatchEvent(new Event(MODE_LAYOUTS_SAVED_EVENT));
@@ -1680,11 +1696,12 @@ const App = () => {
   const widgets = useMemo(
     () => makeWidgetList(
       activeTab,
-      (name) => (modeTabLayout ? Boolean(modeTabLayout.placed[name]) : isWidgetAssignedToTab(name, activeTab)),
+      (name) => name !== carriedName
+        && (modeTabLayout ? Boolean(modeTabLayout.placed[name]) : isWidgetAssignedToTab(name, activeTab)),
       layoutOnActiveTab
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [widgetSettings, pluginSettings, activeTab, widgetAssignments, installedPlugins, displayTheme, themeColors, demoStatus.demo, hiddenControls, frameTouch, modeTabLayout]
+    [widgetSettings, pluginSettings, activeTab, widgetAssignments, installedPlugins, displayTheme, themeColors, demoStatus.demo, hiddenControls, frameTouch, modeTabLayout, carriedName]
   );
 
   // Mobile stack (issue #118): same widget content nodes, fixed order, photos
@@ -1818,8 +1835,12 @@ const App = () => {
         {isMobile && mobileWidgets.length > 0 && (
           <MobileDashboard widgets={mobileWidgets} />
         )}
+        {carry.ghost}
         {!isMobile && widgets.length > 0 && !layoutEditor && (
+          <Box ref={dashboardGridRef}>
           <WidgetContainer
+            // A widget carried to another tab ends the drag it began in.
+            key={`grid-${carry.carryKey}`}
             widgets={widgets}
             locked={widgetsLocked}
             activeTab={activeTab}
@@ -1830,9 +1851,10 @@ const App = () => {
             expandSettings={screensaverSettings}
             onExpandedSizeChange={setExpandedWidgetSize}
             onSaveLayouts={saveLayoutsToMode}
-            onWidgetDrag={handleWidgetDrag}
-            onWidgetDragStop={handleWidgetDragStop}
+            onWidgetDrag={carry.onDrag}
+            onWidgetDragStop={carry.onDragStop}
           />
+          </Box>
         )}
         {shouldRunWeatherBackgroundPrefetch && (
           <Box sx={{ display: 'none' }}>
@@ -1919,7 +1941,7 @@ const App = () => {
           covers the bottom action buttons of the panel's dialogs. */}
       {!(isMobile && showAdminPanel) && (
       <TabBar
-        dropTarget={dockDropTarget}
+        dropTarget={carry.hoverTarget}
         tabs={tabs}
         activeTab={activeTab}
         onTabChange={handleTabChange}

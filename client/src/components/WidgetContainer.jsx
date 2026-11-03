@@ -2,8 +2,7 @@ import React, { Suspense, useState, useEffect, useMemo, useRef, useCallback } fr
 import { Box, IconButton } from '@mui/material';
 import { CloseFullscreen, Fullscreen, OpenInFull } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
-import GridLayout, { getCompactor } from 'react-grid-layout';
-import { createScaledStrategy } from 'react-grid-layout/core';
+import GridLayout, { getCompactor, setTransform } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import axios from 'axios';
@@ -159,7 +158,14 @@ const WidgetContainer = ({
   // tab. Read when a save is requested, not when the debounced save fires.
   const widgetsRef = useRef(widgets);
   widgetsRef.current = widgets;
-  const scaledStrategy = useMemo(() => (scale !== 1 ? createScaledStrategy(scale) : undefined), [scale]);
+  // The library's own scaled strategy places a drag from the pointer's
+  // clientX, which touch events don't have, so a finger never moved anything.
+  // Without calcDragPosition the grid works from the element's position
+  // divided by the scale, for mouse and touch alike.
+  const scaledStrategy = useMemo(
+    () => (scale !== 1 ? { type: 'transform', scale, calcStyle: (pos) => setTransform(pos) } : undefined),
+    [scale]
+  );
   const onSaveLayoutsRef = useRef(onSaveLayouts);
   onSaveLayoutsRef.current = onSaveLayouts;
 
